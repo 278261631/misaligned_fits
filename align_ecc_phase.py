@@ -107,6 +107,19 @@ def save_png(img, path: Path, title: str):
     plt.close()
 
 
+def write_preprocessed_outputs(a_path: Path, b_path: Path, outdir: Path, a_reg, b_reg):
+    a_reg_fits = outdir / f"{a_path.stem}_preprocessed_for_registration.fits"
+    b_reg_fits = outdir / f"{b_path.stem}_preprocessed_for_registration.fits"
+    fits.writeto(a_reg_fits, np.asarray(a_reg, dtype=np.float32), overwrite=True)
+    fits.writeto(b_reg_fits, np.asarray(b_reg, dtype=np.float32), overwrite=True)
+
+    a_reg_png = outdir / f"{a_path.stem}_preprocessed_for_registration_preview.png"
+    b_reg_png = outdir / f"{b_path.stem}_preprocessed_for_registration_preview.png"
+    save_png(a_reg, a_reg_png, f"Preprocessed for registration: {a_path.name}")
+    save_png(b_reg, b_reg_png, f"Preprocessed for registration: {b_path.name}")
+    return a_reg_fits, b_reg_fits, a_reg_png, b_reg_png
+
+
 def align_pair(a_path: Path, b_path: Path, outdir: Path, phase_only=False, ecc_iterations=300, ecc_eps=1e-6):
     a_data = fits.getdata(a_path).astype(np.float32)
     b_data = fits.getdata(b_path).astype(np.float32)
@@ -115,6 +128,7 @@ def align_pair(a_path: Path, b_path: Path, outdir: Path, phase_only=False, ecc_i
 
     a_reg = preprocess_for_registration(a_data)
     b_reg = preprocess_for_registration(b_data)
+    a_reg_fits, b_reg_fits, a_reg_png, b_reg_png = write_preprocessed_outputs(a_path, b_path, outdir, a_reg, b_reg)
 
     phase_warp, (dx, dy), phase_score = estimate_translation_phase(a_reg, b_reg)
     used_method = "phase"
@@ -162,6 +176,10 @@ def align_pair(a_path: Path, b_path: Path, outdir: Path, phase_only=False, ecc_i
     print(f"WROTE {out_fits}")
     print(f"WROTE {preview_png}")
     print(f"WROTE {absdiff_png}")
+    print(f"WROTE {a_reg_fits}")
+    print(f"WROTE {b_reg_fits}")
+    print(f"WROTE {a_reg_png}")
+    print(f"WROTE {b_reg_png}")
 
 
 def resolve_path(base: Path, maybe_path):
