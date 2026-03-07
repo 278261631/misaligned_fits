@@ -1,4 +1,5 @@
 from pathlib import Path
+import argparse
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -101,26 +102,24 @@ def save_png(img, path: Path, title: str):
     plt.close()
 
 
-def main():
-    base = Path(r"D:/missalign_fits/astap_sip")
-    a_path = base / "K024-6_a.fits"
-    b_path = base / "K024-6_b.fits"
-    outdir = base / "direct_no_wcs"
-    outdir.mkdir(parents=True, exist_ok=True)
-
+def align_pair(a_path: Path, b_path: Path, outdir: Path):
     a_data = fits.getdata(a_path).astype(float)
     b_data = fits.getdata(b_path).astype(float)
     a_header = fits.getheader(a_path)
 
     xy_a = detect_stars(a_data, max_stars=5000)
     xy_b = detect_stars(b_data, max_stars=5000)
-    if len(xy_a) < 200 or len(xy_b) < 200:
+    if len(xy_a) < 80 or len(xy_b) < 80:
         raise RuntimeError("Not enough stars detected for direct fit.")
 
     dx0, dy0 = estimate_shift_fft(a_data, b_data)
-    ai_idx, bi_idx = build_matches(xy_a, xy_b, dx0, dy0, match_radius=8.0)
-    if len(ai_idx) < 300:
-        raise RuntimeError(f"Too few initial matches: {len(ai_idx)}")
+    ai_idx = bi_idx = np.array([], dtype=int)
+    for radius in (8.0, 12.0, 16.0, 24.0):
+        ai_idx, bi_idx = build_matches(xy_a, xy_b, dx0, dy0, match_radius=radius)
+        if len(ai_idx) >= 100:
+            break
+    if len(ai_idx) < 100:
+        raise RuntimeError(f"Too few initial matches after retries: {len(ai_idx)}")
 
     xa, ya = xy_a[ai_idx, 0], xy_a[ai_idx, 1]
     xb, yb = xy_b[bi_idx, 0], xy_b[bi_idx, 1]
@@ -148,12 +147,14 @@ def main():
         )
         out[y0:y1, :] = block.astype(np.float32)
 
-    out_fits = outdir / "K024-6_b_on_a_direct_poly3.fits"
+    out_fits = outdir / f"{b_path.stem}_on_{a_path.stem}_direct_poly3.fits"
     fits.writeto(out_fits, out, a_header, overwrite=True)
 
-    save_png(out, outdir / "K024-6_b_on_a_direct_poly3_preview.png", "Direct fit (no WCS): B -> A")
+    preview_png = outdir / f"{b_path.stem}_on_{a_path.stem}_direct_poly3_preview.png"
+    save_png(out, preview_png, "Direct fit (no WCS): B -> A")
     absdiff = np.abs(np.nan_to_num(a_data, nan=0.0) - np.nan_to_num(out, nan=0.0))
-    save_png(absdiff, outdir / "K024-6_absdiff_direct_poly3.png", "Abs diff |A - B_direct|")
+    absdiff_png = outdir / f"{b_path.stem}_on_{a_path.stem}_absdiff_direct_poly3.png"
+    save_png(absdiff, absdiff_png, "Abs diff |A - B_direct|")
 
     px, py = eval_poly(xa_k, ya_k, cx, cy, degree=3)
     r = np.hypot(px - xb_k, py - yb_k)
@@ -162,8 +163,88 @@ def main():
     print(f"matches_initial={len(ai_idx)}, matches_used={np.count_nonzero(keep)}")
     print(f"fit_residual_mean={np.mean(r):.4f}px, rms={np.sqrt(np.mean(r**2)):.4f}px, max={np.max(r):.4f}px")
     print(f"WROTE {out_fits}")
-    print(f"WROTE {outdir / 'K024-6_b_on_a_direct_poly3_preview.png'}")
-    print(f"WROTE {outdir / 'K024-6_absdiff_direct_poly3.png'}")
+    print(f"WROTE {preview_png}")
+    print(f"WROTE {absdiff_png}")
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Direct no-WCS polynomial alignment for FITS/FT files.")
+    parser.add_argument("--base", type=Path, default=Path(r"D:/missalign_fits/astap_sip"), help="Input directory.")
+    parser.add_argument("--a", type=Path, default=None, help="Reference frame filename or path.")
+    parser.add_argument("--b", type=Path, default=None, help="Target frame filename or path.")
+    parser.add_argument("--outdir", type=Path, default=None, help="Output directory (default: <base>/direct_no_wcs).")
+    parser.add_argument(
+        "--pattern",
+        nargs="+",
+        default=["*.fits", "*.fit", "*.FITS", "*.FIT"],
+        help="Glob patterns used in batch mode.",
+    )
+    parser.add_argument(
+        "--batch",
+        action="store_true",
+        help="Align all matching files to the first matching frame (or --a if provided).",
+    )
+    return parser.parse_args()
+
+
+def resolve_path(base: Path, maybe_path: Path | None):
+    if maybe_path is None:
+        return None
+    if maybe_path.is_absolute():
+        return maybe_path
+    return base / maybe_path
+
+
+def list_inputs(base: Path, patterns):
+    files = []
+    seen = set()
+    for pattern in patterns:
+        for p in sorted(base.glob(pattern)):
+            if p.is_file() and p not in seen:
+                seen.add(p)
+                files.append(p)
+    return files
+
+
+def main():
+    args = parse_args()
+    base = args.base
+    outdir = args.outdir if args.outdir is not None else (base / "direct_no_wcs")
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    a_path = resolve_path(base, args.a)
+    b_path = resolve_path(base, args.b)
+
+    if args.batch:
+        inputs = list_inputs(base, args.pattern)
+        if len(inputs) < 2:
+            raise RuntimeError(f"Need at least 2 input files in {base} for batch mode.")
+        ref = a_path if a_path is not None else inputs[0]
+        targets = [p for p in inputs if p != ref]
+        if not targets:
+            raise RuntimeError("Batch mode found no target files after selecting reference frame.")
+        print(f"Reference: {ref}")
+        print(f"Targets: {len(targets)}")
+        ok = 0
+        failed = 0
+        for tgt in targets:
+            print("-" * 72)
+            print(f"Aligning target: {tgt.name}")
+            try:
+                align_pair(ref, tgt, outdir)
+                ok += 1
+            except Exception as exc:
+                failed += 1
+                print(f"FAILED {tgt.name}: {exc}")
+        print("-" * 72)
+        print(f"Batch done. success={ok}, failed={failed}")
+        return
+
+    if a_path is None or b_path is None:
+        a_path = base / "K024-6_a.fits"
+        b_path = base / "K024-6_b.fits"
+
+    align_pair(a_path, b_path, outdir)
 
 
 if __name__ == "__main__":
