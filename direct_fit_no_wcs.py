@@ -12,16 +12,8 @@ from scipy.signal import fftconvolve
 from scipy.spatial import cKDTree
 
 
-def detect_stars(image, max_stars=5000, weak_signal=False):
-    if weak_signal:
-        detect_cfg = [
-            (8.0, 3.0, 5.0, 3.0),
-            (8.0, 3.0, 4.0, 2.8),
-            (6.0, 3.0, 3.5, 2.6),
-            (4.5, 3.0, 3.0, 2.4),
-        ]
-    else:
-        detect_cfg = [(8.0, 3.0, 5.0, 3.0)]
+def detect_stars(image, max_stars=5000):
+    detect_cfg = [(8.0, 3.0, 5.0, 3.0)]
 
     best_xy = np.empty((0, 2))
     best_flux = np.empty((0,))
@@ -94,10 +86,10 @@ def n_poly_terms(degree):
     return (degree + 1) * (degree + 2) // 2
 
 
-def fit_with_fallback(xa, ya, xb, yb, weak_signal=False):
-    degrees = [3, 2, 1] if weak_signal else [3]
-    n_iter = 6 if weak_signal else 5
-    clip_sigma = 3.2 if weak_signal else 2.8
+def fit_with_fallback(xa, ya, xb, yb):
+    degrees = [3]
+    n_iter = 5
+    clip_sigma = 2.8
 
     for degree in degrees:
         min_points = max(20, n_poly_terms(degree) * 3)
@@ -140,21 +132,21 @@ def save_png(img, path: Path, title: str):
     plt.close()
 
 
-def align_pair(a_path: Path, b_path: Path, outdir: Path, weak_signal=False):
+def align_pair(a_path: Path, b_path: Path, outdir: Path):
     a_data = fits.getdata(a_path).astype(float)
     b_data = fits.getdata(b_path).astype(float)
     a_header = fits.getheader(a_path)
 
-    max_stars = 9000 if weak_signal else 5000
-    xy_a = detect_stars(a_data, max_stars=max_stars, weak_signal=weak_signal)
-    xy_b = detect_stars(b_data, max_stars=max_stars, weak_signal=weak_signal)
-    min_stars = 40 if weak_signal else 80
+    max_stars = 5000
+    xy_a = detect_stars(a_data, max_stars=max_stars)
+    xy_b = detect_stars(b_data, max_stars=max_stars)
+    min_stars = 80
     if len(xy_a) < min_stars or len(xy_b) < min_stars:
         raise RuntimeError("Not enough stars detected for direct fit.")
 
     dx0, dy0 = estimate_shift_fft(a_data, b_data)
-    radii = (8.0, 12.0, 16.0, 24.0, 32.0) if weak_signal else (8.0, 12.0, 16.0, 24.0)
-    min_matches = 60 if weak_signal else 100
+    radii = (8.0, 12.0, 16.0, 24.0)
+    min_matches = 100
     ai_idx = bi_idx = np.array([], dtype=int)
     for radius in radii:
         ai_idx, bi_idx = build_matches(xy_a, xy_b, dx0, dy0, match_radius=radius)
@@ -167,7 +159,7 @@ def align_pair(a_path: Path, b_path: Path, outdir: Path, weak_signal=False):
     xb, yb = xy_b[bi_idx, 0], xy_b[bi_idx, 1]
 
     # Fit inverse model A(x,y) -> B(x,y) for resampling.
-    cx, cy, keep, fit_degree = fit_with_fallback(xa, ya, xb, yb, weak_signal=weak_signal)
+    cx, cy, keep, fit_degree = fit_with_fallback(xa, ya, xb, yb)
     xa_k, ya_k = xa[keep], ya[keep]
     xb_k, yb_k = xb[keep], yb[keep]
 
@@ -202,7 +194,7 @@ def align_pair(a_path: Path, b_path: Path, outdir: Path, weak_signal=False):
     r = np.hypot(px - xb_k, py - yb_k)
     print(f"stars_A={len(xy_a)}, stars_B={len(xy_b)}")
     print(f"initial_shift_dxdy=({dx0:.3f},{dy0:.3f})")
-    print(f"fit_degree={fit_degree}, weak_signal={weak_signal}")
+    print(f"fit_degree={fit_degree}")
     print(f"matches_initial={len(ai_idx)}, matches_used={np.count_nonzero(keep)}")
     print(f"fit_residual_mean={np.mean(r):.4f}px, rms={np.sqrt(np.mean(r**2)):.4f}px, max={np.max(r):.4f}px")
     print(f"WROTE {out_fits}")
@@ -226,11 +218,6 @@ def parse_args():
         "--batch",
         action="store_true",
         help="Align all matching files to the first matching frame (or --a if provided).",
-    )
-    parser.add_argument(
-        "--weak-signal",
-        action="store_true",
-        help="Use weaker detection thresholds and polynomial fallback for low SNR data.",
     )
     return parser.parse_args()
 
@@ -279,7 +266,7 @@ def main():
             print("-" * 72)
             print(f"Aligning target: {tgt.name}")
             try:
-                align_pair(ref, tgt, outdir, weak_signal=args.weak_signal)
+                align_pair(ref, tgt, outdir)
                 ok += 1
             except Exception as exc:
                 failed += 1
@@ -292,7 +279,7 @@ def main():
         a_path = base / "K024-6_a.fits"
         b_path = base / "K024-6_b.fits"
 
-    align_pair(a_path, b_path, outdir, weak_signal=args.weak_signal)
+    align_pair(a_path, b_path, outdir)
 
 
 if __name__ == "__main__":
