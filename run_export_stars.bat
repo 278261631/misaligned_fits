@@ -1,18 +1,3 @@
 @echo off
-setlocal
-
-if "%~1"=="" (
-    echo Usage: %~nx0 ^<fits_path^> [out_stars_npz]
-    exit /b 1
-)
-
-set "SCRIPT_DIR=%~dp0"
-set "FITS_PATH=%~1"
-
-if "%~2"=="" (
-    python "%SCRIPT_DIR%export_fits_stars.py" --fits "%FITS_PATH%"
-) else (
-    python "%SCRIPT_DIR%export_fits_stars.py" --fits "%FITS_PATH%" --out "%~2"
-)
-
+python "D:/github/misaligned_fits/export_fits_stars.py" --fits "D:/github/test_flow_data/temp/gy1/K024-6.fits" --out "D:/github/test_flow_data/temp/gy1"
 exit /b %ERRORLEVEL%
