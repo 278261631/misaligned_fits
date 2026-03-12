@@ -25,7 +25,7 @@ python "D:\github\misaligned_fits\solve_alignment_from_stars.py" --a-stars "D:/a
 python "D:\github\misaligned_fits\render_alignment_outputs.py" --a "D:/align/gy3_K043-8.fits" --b "D:/align/GY3_K043-8_UTC20260310_163817_-25C_.rp.fit" --align "D:/align/GY3_K043-8_UTC20260310_163817_-25C_.rp.align.npz" --outdir "D:/align/output/"
 
 
-
+python "D:\github\misaligned_fits\rank_variable_candidates.py" --base "D:/align" --ref "D:/align/gy3_K043-8.fits" --out-csv "D:/align/output/variable_candidates_rank.csv" --out-png "D:/align/output/variable_candidates_rank.png"
 
 
 
