@@ -10,3 +10,23 @@ python "D:\github\misaligned_fits\solve_alignment_from_stars.py" --a-stars "D:/m
 python "D:\github\misaligned_fits\render_alignment_outputs.py" --a "D:/missalign/gy2_K043-7.fits" --b "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_.rp.fit" --align "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_.rp.align.npz" --outdir "D:/missalign/output/"
 
 
+
+
+
+
+
+python "D:/github/misaligned_fits/export_fits_stars.py" --fits "D:/align/gy3_K043-8.fits" --out "D:/align/gy3_K043-8.stars.npz"
+
+python "D:/github/misaligned_fits/reproject_wcs_and_export_stars.py" --a "D:/align/gy3_K043-8.fits" --b "D:/align/GY3_K043-8_UTC20260310_163817_-25C_.fit" --out-fits "D:/align/GY3_K043-8_UTC20260310_163817_-25C_.rp.fit" --out-stars "D:/align/GY3_K043-8_UTC20260310_163817_-25C_.rp.stars.npz" --median-size "3" --max-stars "5000"
+
+
+python "D:\github\misaligned_fits\solve_alignment_from_stars.py" --a-stars "D:/align/gy3_K043-8.stars.npz" --b-stars "D:/align/GY3_K043-8_UTC20260310_163817_-25C_.rp.stars.npz" --out "D:/align/GY3_K043-8_UTC20260310_163817_-25C_.rp.align.npz"
+
+python "D:\github\misaligned_fits\render_alignment_outputs.py" --a "D:/align/gy3_K043-8.fits" --b "D:/align/GY3_K043-8_UTC20260310_163817_-25C_.rp.fit" --align "D:/align/GY3_K043-8_UTC20260310_163817_-25C_.rp.align.npz" --outdir "D:/align/output/"
+
+
+
+
+
+
+
