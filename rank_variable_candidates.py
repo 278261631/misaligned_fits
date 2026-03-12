@@ -84,6 +84,38 @@ def save_candidate_scatter(ref_img, x, y, score, top_k, out_png: Path):
     plt.close()
 
 
+def save_candidate_overlay_exact(ref_img, x, y, score, top_k, out_png: Path):
+    finite = np.isfinite(ref_img)
+    fill = np.nanmedian(ref_img[finite]) if np.any(finite) else 0.0
+    view = np.where(finite, ref_img, fill)
+
+    h, w = view.shape
+    dpi = 100
+    order = np.argsort(score)[::-1]
+    keep = order[: min(top_k, len(order))]
+
+    # Export an exact-size overlay image aligned to A pixel grid.
+    fig = plt.figure(figsize=(w / dpi, h / dpi), dpi=dpi, frameon=False)
+    ax = fig.add_axes([0.0, 0.0, 1.0, 1.0])
+    norm = ImageNormalize(view, interval=PercentileInterval(99.5), stretch=SqrtStretch())
+    ax.imshow(view, origin="lower", cmap="gray", norm=norm, interpolation="nearest")
+    ax.scatter(
+        x[keep],
+        y[keep],
+        c=score[keep],
+        s=18,
+        cmap="turbo",
+        alpha=0.9,
+        edgecolors="white",
+        linewidths=0.25,
+    )
+    ax.set_xlim(-0.5, w - 0.5)
+    ax.set_ylim(-0.5, h - 0.5)
+    ax.set_axis_off()
+    fig.savefig(out_png, dpi=dpi, bbox_inches=None, pad_inches=0)
+    plt.close(fig)
+
+
 def main():
     args = parse_args()
     base = args.base
@@ -101,6 +133,7 @@ def main():
 
     out_csv = args.out_csv if args.out_csv is not None else (base / "variable_candidates_rank.csv")
     out_png = args.out_png if args.out_png is not None else (base / "variable_candidates_rank.png")
+    out_png_aligned = out_png.with_name(f"{out_png.stem}_aligned_to_a{out_png.suffix}")
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     out_png.parent.mkdir(parents=True, exist_ok=True)
 
@@ -201,6 +234,14 @@ def main():
         int(args.top_k),
         out_png,
     )
+    save_candidate_overlay_exact(
+        ref_data,
+        xy_ref[:, 0],
+        xy_ref[:, 1],
+        np.nan_to_num(score, nan=-1.0),
+        int(args.top_k),
+        out_png_aligned,
+    )
 
     print(f"Reference: {ref_path}")
     print(f"Frames used: {len(used_files)}")
@@ -208,6 +249,7 @@ def main():
     print(f"Candidates ranked: {len(order)}")
     print(f"WROTE {out_csv}")
     print(f"WROTE {out_png}")
+    print(f"WROTE {out_png_aligned}")
 
     if matched_counts:
         print("Match counts per frame:")
