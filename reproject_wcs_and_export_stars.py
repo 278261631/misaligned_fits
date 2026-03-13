@@ -25,6 +25,11 @@ def parse_args():
     )
     parser.add_argument("--max-stars", type=int, default=5000, help="Maximum stars to keep in output stars file.")
     parser.add_argument("--chunk-rows", type=int, default=256, help="Rows per block during reprojection.")
+    parser.add_argument(
+        "--skip-median-filter",
+        action="store_true",
+        help="Skip median filtering and reproject raw B data directly.",
+    )
     return parser.parse_args()
 
 
@@ -70,8 +75,11 @@ def main():
     wcs_a = WCS(a_header).celestial
     wcs_b = WCS(fits.getheader(args.b)).celestial
 
-    b_denoised = median_filter(b_data, size=int(args.median_size))
-    out = reproject_b_to_a_wcs(a_data, b_denoised, wcs_a, wcs_b, chunk_rows=args.chunk_rows)
+    if args.skip_median_filter:
+        b_input = b_data
+    else:
+        b_input = median_filter(b_data, size=int(args.median_size))
+    out = reproject_b_to_a_wcs(a_data, b_input, wcs_a, wcs_b, chunk_rows=args.chunk_rows)
 
     args.out_fits.parent.mkdir(parents=True, exist_ok=True)
     args.out_stars.parent.mkdir(parents=True, exist_ok=True)
@@ -94,7 +102,10 @@ def main():
         width=int(w),
     )
 
-    print(f"median_size={int(args.median_size)}")
+    if args.skip_median_filter:
+        print("median_filter=skipped")
+    else:
+        print(f"median_size={int(args.median_size)}")
     print(f"stars={len(xy)}")
     print(f"WROTE {args.out_fits}")
     print(f"WROTE {args.out_stars}")

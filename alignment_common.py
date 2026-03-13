@@ -20,7 +20,8 @@ def detect_stars(image, max_stars=5000):
     xy = np.column_stack([np.asarray(src["xcentroid"]), np.asarray(src["ycentroid"])])
     flux = np.asarray(src["flux"])
     order = np.argsort(flux)[::-1]
-    order = order[:max_stars]
+    if max_stars is not None and int(max_stars) > 0:
+        order = order[: int(max_stars)]
     return xy[order], flux[order]
 
 
