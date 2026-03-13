@@ -9,7 +9,11 @@ python "D:\github\misaligned_fits\reproject_wcs_and_export_stars.py" --a "D:/mis
 
 python "D:\github\misaligned_fits\solve_alignment_from_stars.py" --a-stars "D:/missalign/gy2_K043-7.stars.npz" --b-stars "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_.rp.stars.npz" --out "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_.rp.align.npz"
 
-python "D:\github\misaligned_fits\render_alignment_outputs.py" --a "D:/missalign/gy2_K043-7.fits" --b "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_.02rp.fit" --align "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_.rp.align.npz" --outdir "D:/missalign/output/"
+python "D:\github\misaligned_fits\render_alignment_outputs.py" ^
+    --a "D:/missalign/gy2_K043-7.fits" ^
+    --b "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_.02rp.fit" ^
+    --align "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_.rp.align.npz" ^
+    --outdir "D:/missalign/output/"
 
 python "D:\github\misaligned_fits\rank_variable_candidates.py" --base "D:/missalign" --ref "D:/missalign/gy2_K043-7.fits" --out-csv "D:/missalign/output/variable_candidates_rank.csv" --out-png "D:/missalign/output/variable_candidates_rank.png" --min-observations 2
 
