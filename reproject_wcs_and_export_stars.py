@@ -6,7 +6,7 @@ from astropy.io import fits
 from astropy.wcs import WCS
 from scipy.ndimage import map_coordinates, median_filter
 
-from alignment_common import detect_stars
+from alignment_common import detect_stars, select_stars_uniform_grid
 
 
 def parse_args():
@@ -25,6 +25,19 @@ def parse_args():
         help="Median filter kernel size applied to B before reprojection (odd integer recommended).",
     )
     parser.add_argument("--max-stars", type=int, default=5000, help="Maximum stars to keep in output stars file.")
+    parser.add_argument("--uniform-grid-x", type=int, default=7, help="Grid columns for uniform star selection.")
+    parser.add_argument("--uniform-grid-y", type=int, default=7, help="Grid rows for uniform star selection.")
+    parser.add_argument(
+        "--uniform-per-cell",
+        type=int,
+        default=80,
+        help="Maximum stars selected per grid cell in --out-stars.",
+    )
+    parser.add_argument(
+        "--no-uniform-selection",
+        action="store_true",
+        help="Disable uniform-grid selection for --out-stars and use global brightness ranking.",
+    )
     parser.add_argument("--chunk-rows", type=int, default=256, help="Rows per block during reprojection.")
     parser.add_argument(
         "--skip-median-filter",
@@ -94,10 +107,24 @@ def main():
     fits.writeto(args.out_fits, out, a_header, overwrite=True)
 
     detect_img = _safe_for_detection(out)
-    xy_align, flux_align = detect_stars(detect_img, max_stars=int(args.max_stars))
-    if len(xy_align) == 0:
-        raise RuntimeError("No stars detected from reprojected image.")
     xy_all, flux_all = detect_stars(detect_img, max_stars=0)
+    if len(xy_all) == 0:
+        raise RuntimeError("No stars detected from reprojected image.")
+    if args.no_uniform_selection:
+        xy_align, flux_align = detect_stars(detect_img, max_stars=int(args.max_stars))
+    else:
+        xy_align, flux_align = select_stars_uniform_grid(
+            xy_all,
+            flux_all,
+            height=int(h),
+            width=int(w),
+            grid_x=int(args.uniform_grid_x),
+            grid_y=int(args.uniform_grid_y),
+            per_cell=int(args.uniform_per_cell),
+            max_total=int(args.max_stars),
+        )
+    if len(xy_align) == 0:
+        raise RuntimeError("No stars selected for alignment from reprojected image.")
 
     np.savez_compressed(
         args.out_stars,
@@ -127,6 +154,13 @@ def main():
         print(f"median_size={int(args.median_size)}")
     print(f"stars_align={len(xy_align)}")
     print(f"stars_all={len(xy_all)}")
+    if args.no_uniform_selection:
+        print("uniform_selection=disabled")
+    else:
+        print(
+            f"uniform_selection=enabled grid={int(args.uniform_grid_x)}x{int(args.uniform_grid_y)} "
+            f"per_cell={int(args.uniform_per_cell)}"
+        )
     print(f"WROTE {args.out_fits}")
     print(f"WROTE {args.out_stars}")
     print(f"WROTE {out_stars_all}")

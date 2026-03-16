@@ -25,6 +25,46 @@ def detect_stars(image, max_stars=5000):
     return xy[order], flux[order]
 
 
+def select_stars_uniform_grid(xy, flux, height, width, grid_x=7, grid_y=7, per_cell=80, max_total=5000):
+    xy = np.asarray(xy, dtype=float)
+    flux = np.asarray(flux, dtype=float)
+    if len(xy) == 0 or len(flux) == 0:
+        return np.empty((0, 2), dtype=float), np.empty((0,), dtype=float)
+    if xy.shape[0] != flux.shape[0]:
+        raise ValueError(f"xy/flux length mismatch: {xy.shape[0]} vs {flux.shape[0]}")
+
+    gx = max(int(grid_x), 1)
+    gy = max(int(grid_y), 1)
+    pc = max(int(per_cell), 1)
+    h = max(int(height), 1)
+    w = max(int(width), 1)
+
+    x = np.clip(xy[:, 0], 0.0, w - 1e-6)
+    y = np.clip(xy[:, 1], 0.0, h - 1e-6)
+    ix = np.minimum((x / w * gx).astype(int), gx - 1)
+    iy = np.minimum((y / h * gy).astype(int), gy - 1)
+    cell_id = iy * gx + ix
+
+    keep_idx = []
+    for cid in range(gx * gy):
+        idx = np.where(cell_id == cid)[0]
+        if len(idx) == 0:
+            continue
+        loc = idx[np.argsort(flux[idx])[::-1]]
+        keep_idx.append(loc[: min(pc, len(loc))])
+
+    if len(keep_idx) == 0:
+        return np.empty((0, 2), dtype=float), np.empty((0,), dtype=float)
+
+    sel = np.concatenate(keep_idx)
+    if max_total is not None and int(max_total) > 0 and len(sel) > int(max_total):
+        sel = sel[np.argsort(flux[sel])[::-1][: int(max_total)]]
+
+    # Keep output stably ordered by brightness.
+    sel = sel[np.argsort(flux[sel])[::-1]]
+    return xy[sel], flux[sel]
+
+
 def estimate_translation_from_stars(xy_a, xy_b, top_n=300, bin_size=2.0):
     if len(xy_a) == 0 or len(xy_b) == 0:
         raise RuntimeError("Empty star list.")

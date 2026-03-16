@@ -3,7 +3,8 @@
 python "D:/github/misaligned_fits/export_fits_stars.py" ^
     --fits "D:/missalign/gy2_K043-7.fits" ^
     --out "D:/missalign/gy2_K043-7.stars.npz" ^
-    --out-all "D:/missalign/gy2_K043-7.stars.all.npz"
+    --out-all "D:/missalign/gy2_K043-7.stars.all.npz" ^
+    --uniform-grid-x 7 --uniform-grid-y 7 --uniform-per-cell 100
 
 python "D:/github/fits_data_view_process_3d/std_process/recommended_pipeline_console.py" ^
     -i "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_.fit" ^
@@ -16,13 +17,15 @@ python "D:\github\misaligned_fits\reproject_wcs_and_export_stars.py" ^
     --out-fits "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_.02rp.fit" ^
     --out-stars "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_.rp.stars.npz" ^
     --out-stars-all "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_.rp.stars.all.npz" ^
-    --skip-median-filter --max-stars "5000"
+    --skip-median-filter --max-stars "5000" ^
+    --uniform-grid-x 7 --uniform-grid-y 7 --uniform-per-cell 100
 
 
 python "D:\github\misaligned_fits\solve_alignment_from_stars.py" ^
     --a-stars "D:/missalign/gy2_K043-7.stars.npz" ^
     --b-stars "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_.rp.stars.npz" ^
-    --out "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_.rp.align.npz"
+    --out "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_.rp.align.npz" ^
+    --radii 6 9 12 16 24 32 40
 
 python "D:\github\misaligned_fits\render_alignment_outputs.py" ^
     --a "D:/missalign/gy2_K043-7.fits" ^
