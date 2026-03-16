@@ -20,7 +20,7 @@ def parse_args():
         "--radii",
         nargs="+",
         type=float,
-        default=[8.0, 12.0, 16.0, 24.0, 32.0, 40.0],
+        default=[24.0, 32.0, 40.0],
         help="Match radii attempts.",
     )
     parser.add_argument("--min-matches", type=int, default=80, help="Minimum initial matches required.")

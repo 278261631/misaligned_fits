@@ -25,7 +25,7 @@ python "D:\github\misaligned_fits\solve_alignment_from_stars.py" ^
     --a-stars "D:/missalign/gy2_K043-7.stars.npz" ^
     --b-stars "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_.rp.stars.npz" ^
     --out "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_.rp.align.npz" ^
-    --radii 6 9 12 16 24 32 40
+    --radii 24 32 40
 
 python "D:\github\misaligned_fits\render_alignment_outputs.py" ^
     --a "D:/missalign/gy2_K043-7.fits" ^
