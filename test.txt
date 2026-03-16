@@ -15,9 +15,17 @@ python "D:\github\misaligned_fits\render_alignment_outputs.py" ^
     --align "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_.rp.align.npz" ^
     --outdir "D:/missalign/output/"
 
-python "D:\github\misaligned_fits\rank_variable_candidates.py" --base "D:/missalign" --ref "D:/missalign/gy2_K043-7.fits" --out-csv "D:/missalign/output/variable_candidates_rank.csv" --out-png "D:/missalign/output/variable_candidates_rank.png" --min-observations 2
+python "D:\github\misaligned_fits\rank_variable_candidates.py" ^
+    --ref-stars-all "D:/missalign/gy2_K043-7.stars.all.npz" ^
+    --target-stars-all "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_.rp.stars.all.npz" ^
+    --target-align "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_.rp.align.npz" ^
+    --out-csv "D:/missalign/output/variable_candidates_rank.csv" ^
+    --out-csv-nonref "D:/missalign/output/variable_candidates_nonref_only.csv" ^
+    --out-csv-ref-missing "D:/missalign/output/variable_candidates_ref_only_missing_in_targets.csv" ^
+    --out-png "D:/missalign/output/variable_candidates_rank.png" ^
+    --min-observations 2
 
-
+    // --out-png "D:/missalign/output/variable_candidates_rank.png" ^
 
 
 
