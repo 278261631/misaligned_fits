@@ -82,7 +82,7 @@ python "D:\github\misaligned_fits\render_alignment_outputs.py" ^
     --outdir "D:/align/GY3_K043-8_UTC20260310_163817_-25C_/"
 
 
-python "D:\github\misaligned_fits\rank_variable_candidates.py" ^  
+python "D:\github\misaligned_fits\rank_variable_candidates.py" ^
     --ref-stars-all "D:/align/gy3_K043-8.stars.all.npz" ^
     --target-stars-all "D:/align/GY3_K043-8_UTC20260310_163817_-25C_.rp.stars.all.npz" ^
     --target-align "D:/align/GY3_K043-8_UTC20260310_163817_-25C_.rp.align.npz" ^
