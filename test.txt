@@ -31,36 +31,66 @@ python "D:\github\misaligned_fits\render_alignment_outputs.py" ^
     --a "D:/missalign/gy2_K043-7.fits" ^
     --b "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_.02rp.fit" ^
     --align "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_.rp.align.npz" ^
-    --outdir "D:/missalign/output/"
+    --outdir "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_/"
 
 python "D:\github\misaligned_fits\rank_variable_candidates.py" ^
     --ref-stars-all "D:/missalign/gy2_K043-7.stars.all.npz" ^
     --target-stars-all "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_.rp.stars.all.npz" ^
     --target-align "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_.rp.align.npz" ^
-    --out-csv "D:/missalign/output/variable_candidates_rank.csv" ^
-    --out-csv-nonref "D:/missalign/output/variable_candidates_nonref_only.csv" ^
-    --out-csv-ref-missing "D:/missalign/output/variable_candidates_ref_only_missing_in_targets.csv" ^
-    --out-png "D:/missalign/output/variable_candidates_rank.png" ^
+    --out-csv "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_/variable_candidates_rank.csv" ^
+    --out-csv-nonref "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_/variable_candidates_nonref_only.csv" ^
+    --out-csv-ref-missing "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_/variable_candidates_ref_only_missing_in_targets.csv" ^
+    --out-png "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_/variable_candidates_rank.png" ^
     --min-observations 2
 
-    // --out-png "D:/missalign/output/variable_candidates_rank.png" ^
+    // --out-png "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_/variable_candidates_rank.png" ^
 
 
 
 
-python "D:/github/misaligned_fits/export_fits_stars.py" --fits "D:/align/gy3_K043-8.fits" --out "D:/align/gy3_K043-8.stars.npz" --out-all "D:/align/gy3_K043-8.stars.all.npz"
+python "D:/github/misaligned_fits/export_fits_stars.py" ^
+    --fits "D:/align/gy3_K043-8.fits" ^
+    --out "D:/align/gy3_K043-8.stars.npz" ^
+    --out-all "D:/align/gy3_K043-8.stars.all.npz" ^
+    --uniform-grid-x 7 --uniform-grid-y 7 --uniform-per-cell 100
 
-python "D:/github/fits_data_view_process_3d/std_process/recommended_pipeline_console.py" -i "D:/align/GY3_K043-8_UTC20260310_163817_-25C_.fit" -o "D:/align/GY3_K043-8_UTC20260310_163817_-25C_.01proc.fit" --box 48 --clip-sigma 3.0 --median-ksize 3 --denoise-sigma 2.0 --mix-alpha 0.7 --overwrite
+python "D:/github/fits_data_view_process_3d/std_process/recommended_pipeline_console.py" ^
+    -i "D:/align/GY3_K043-8_UTC20260310_163817_-25C_.fit" ^
+    -o "D:/align/GY3_K043-8_UTC20260310_163817_-25C_.01proc.fit" ^
+    --box 48 --clip-sigma 3.0 --median-ksize 3 --denoise-sigma 2.0 --mix-alpha 0.7 --overwrite
 
-python "D:/github/misaligned_fits/reproject_wcs_and_export_stars.py" --a "D:/align/gy3_K043-8.fits" --b "D:/align/GY3_K043-8_UTC20260310_163817_-25C_.01proc.fit" --out-fits "D:/align/GY3_K043-8_UTC20260310_163817_-25C_.02rp.fit" --out-stars "D:/align/GY3_K043-8_UTC20260310_163817_-25C_.rp.stars.npz" --out-stars-all "D:/align/GY3_K043-8_UTC20260310_163817_-25C_.rp.stars.all.npz" --skip-median-filter --max-stars "5000"
+python "D:/github/misaligned_fits/reproject_wcs_and_export_stars.py" ^
+    --a "D:/align/gy3_K043-8.fits" ^
+    --b "D:/align/GY3_K043-8_UTC20260310_163817_-25C_.01proc.fit" ^
+    --out-fits "D:/align/GY3_K043-8_UTC20260310_163817_-25C_.02rp.fit" ^
+    --out-stars "D:/align/GY3_K043-8_UTC20260310_163817_-25C_.rp.stars.npz" ^
+    --out-stars-all "D:/align/GY3_K043-8_UTC20260310_163817_-25C_.rp.stars.all.npz" ^
+    --skip-median-filter --max-stars "5000" ^
+    --uniform-grid-x 7 --uniform-grid-y 7 --uniform-per-cell 100
 
 
-python "D:\github\misaligned_fits\solve_alignment_from_stars.py" --a-stars "D:/align/gy3_K043-8.stars.npz" --b-stars "D:/align/GY3_K043-8_UTC20260310_163817_-25C_.rp.stars.npz" --out "D:/align/GY3_K043-8_UTC20260310_163817_-25C_.rp.align.npz"
+python "D:\github\misaligned_fits\solve_alignment_from_stars.py" ^
+    --a-stars "D:/align/gy3_K043-8.stars.npz" ^
+    --b-stars "D:/align/GY3_K043-8_UTC20260310_163817_-25C_.rp.stars.npz" ^
+    --out "D:/align/GY3_K043-8_UTC20260310_163817_-25C_.rp.align.npz" ^
+    --radii 24 32 40
 
-python "D:\github\misaligned_fits\render_alignment_outputs.py" --a "D:/align/gy3_K043-8.fits" --b "D:/align/GY3_K043-8_UTC20260310_163817_-25C_.02rp.fit" --align "D:/align/GY3_K043-8_UTC20260310_163817_-25C_.rp.align.npz" --outdir "D:/align/output/"
+python "D:\github\misaligned_fits\render_alignment_outputs.py" ^
+    --a "D:/align/gy3_K043-8.fits" ^
+    --b "D:/align/GY3_K043-8_UTC20260310_163817_-25C_.02rp.fit" ^
+    --align "D:/align/GY3_K043-8_UTC20260310_163817_-25C_.rp.align.npz" ^
+    --outdir "D:/align/GY3_K043-8_UTC20260310_163817_-25C_/"
 
 
-python "D:\github\misaligned_fits\rank_variable_candidates.py" --base "D:/align" --ref "D:/align/gy3_K043-8.fits" --out-csv "D:/align/output/variable_candidates_rank.csv" --out-png "D:/align/output/variable_candidates_rank.png" --min-observations 2
+python "D:\github\misaligned_fits\rank_variable_candidates.py" ^  
+    --ref-stars-all "D:/align/gy3_K043-8.stars.all.npz" ^
+    --target-stars-all "D:/align/GY3_K043-8_UTC20260310_163817_-25C_.rp.stars.all.npz" ^
+    --target-align "D:/align/GY3_K043-8_UTC20260310_163817_-25C_.rp.align.npz" ^
+    --out-csv "D:/align/GY3_K043-8_UTC20260310_163817_-25C_/variable_candidates_rank.csv" ^
+    --out-csv-nonref "D:/align/GY3_K043-8_UTC20260310_163817_-25C_/variable_candidates_nonref_only.csv" ^
+    --out-csv-ref-missing "D:/align/GY3_K043-8_UTC20260310_163817_-25C_/variable_candidates_ref_only_missing_in_targets.csv" ^
+    --out-png "D:/align/GY3_K043-8_UTC20260310_163817_-25C_/variable_candidates_rank.png" ^
+    --min-observations 2
 
 
 
