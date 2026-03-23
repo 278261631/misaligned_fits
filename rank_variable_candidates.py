@@ -518,7 +518,8 @@ def main():
         nonref_n_frames = np.asarray([len(s) for s in nonref_frame_sets], dtype=np.int32)
         nonref_median_flux = np.asarray([float(np.median(v)) for v in nonref_flux_samples], dtype=np.float64)
         nonref_n_det = np.asarray(nonref_n_detections, dtype=np.int32)
-        nonref_order = np.lexsort((-nonref_median_flux, -nonref_n_det, -nonref_n_frames))[::-1]
+        # Primary key: median flux (desc), tie-breakers: detections (desc), frames (desc).
+        nonref_order = np.lexsort((-nonref_n_frames, -nonref_n_det, -nonref_median_flux))
 
         with out_csv_nonref.open("w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
