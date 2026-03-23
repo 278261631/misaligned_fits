@@ -1,6 +1,7 @@
 from pathlib import Path
 import argparse
 import csv
+import json
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -35,6 +36,18 @@ def parse_args():
         type=Path,
         default=None,
         help="Output CSV for stars detected in reference but missing in all used target frames.",
+    )
+    parser.add_argument(
+        "--out-csv-nonref-inner-border",
+        type=Path,
+        default=None,
+        help="Output CSV for non-reference-only stars inside ref-target overlap border only.",
+    )
+    parser.add_argument(
+        "--out-overlap-expr",
+        type=Path,
+        default=None,
+        help="Output JSON with ref-target overlap polygon expressions (per used frame).",
     )
     parser.add_argument("--out-png", type=Path, default=None, help="Output candidate scatter PNG path.")
     parser.add_argument("--max-stars", type=int, default=5000, help="Maximum stars detected per frame.")
@@ -119,6 +132,35 @@ def list_inputs(base: Path, patterns):
 def robust_mad(x):
     med = np.nanmedian(x)
     return 1.4826 * np.nanmedian(np.abs(x - med))
+
+
+def infer_frame_size_from_xy(xy):
+    if len(xy) == 0:
+        return 1, 1
+    w = max(int(np.ceil(np.nanmax(xy[:, 0]) + 1.0)), 1)
+    h = max(int(np.ceil(np.nanmax(xy[:, 1]) + 1.0)), 1)
+    return h, w
+
+
+def compute_overlap_rect_xy_bounds(w_ref, h_ref, w_tgt, h_tgt, dx0, dy0):
+    ref_x_min, ref_x_max = -0.5, float(w_ref) - 0.5
+    ref_y_min, ref_y_max = -0.5, float(h_ref) - 0.5
+    tgt_x_min, tgt_x_max = float(dx0) - 0.5, float(dx0) + float(w_tgt) - 0.5
+    tgt_y_min, tgt_y_max = float(dy0) - 0.5, float(dy0) + float(h_tgt) - 0.5
+    x_min = max(ref_x_min, tgt_x_min)
+    x_max = min(ref_x_max, tgt_x_max)
+    y_min = max(ref_y_min, tgt_y_min)
+    y_max = min(ref_y_max, tgt_y_max)
+    if x_min > x_max or y_min > y_max:
+        return None
+    return x_min, x_max, y_min, y_max
+
+
+def point_in_overlap_rect(x, y, rect):
+    if rect is None:
+        return False
+    x_min, x_max, y_min, y_max = rect
+    return (x >= x_min) and (x <= x_max) and (y >= y_min) and (y <= y_max)
 
 
 def load_stars_npz(path: Path, return_meta=False):
@@ -306,11 +348,21 @@ def main():
         if args.out_csv_ref_missing is not None
         else (base / "variable_candidates_ref_only_missing_in_targets.csv")
     )
+    out_csv_nonref_inner_border = (
+        args.out_csv_nonref_inner_border
+        if args.out_csv_nonref_inner_border is not None
+        else (base / "variable_candidates_nonref_only_inner_border.csv")
+    )
+    out_overlap_expr = (
+        args.out_overlap_expr if args.out_overlap_expr is not None else (base / "ref_target_overlap_polygon_expr.json")
+    )
     out_png = args.out_png if args.out_png is not None else (base / "variable_candidates_rank.png")
     out_png_aligned = out_png.with_name(f"{out_png.stem}_aligned_to_a{out_png.suffix}")
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     out_csv_nonref.parent.mkdir(parents=True, exist_ok=True)
     out_csv_ref_missing.parent.mkdir(parents=True, exist_ok=True)
+    out_csv_nonref_inner_border.parent.mkdir(parents=True, exist_ok=True)
+    out_overlap_expr.parent.mkdir(parents=True, exist_ok=True)
     out_png.parent.mkdir(parents=True, exist_ok=True)
 
     ref_data = None
@@ -363,6 +415,7 @@ def main():
     nonref_flux_samples = []
     nonref_n_detections = []
     nonref_frame_sets = []
+    overlap_rect_by_frame = {}
 
     target_entries = []
     if npz_mode:
@@ -375,9 +428,14 @@ def main():
     for stars_npz_path, align_npz_path, p in target_entries:
         try:
             if npz_mode:
-                xy_b, flux_b = load_stars_npz(stars_npz_path)
+                xy_b, flux_b, tgt_meta = load_stars_npz(stars_npz_path, return_meta=True)
                 if len(xy_b) == 0:
                     raise RuntimeError("No stars detected in target stars NPZ.")
+                if "height" in tgt_meta and "width" in tgt_meta:
+                    h_b = int(np.asarray(tgt_meta["height"]).ravel()[0])
+                    w_b = int(np.asarray(tgt_meta["width"]).ravel()[0])
+                else:
+                    h_b, w_b = infer_frame_size_from_xy(xy_b)
                 sol = np.load(align_npz_path, allow_pickle=True)
                 if "cx" not in sol or "cy" not in sol or "fit_degree" not in sol:
                     raise RuntimeError(f"Invalid align NPZ (need cx/cy/fit_degree): {align_npz_path}")
@@ -396,6 +454,7 @@ def main():
                 frame_label = stars_npz_path.name
             else:
                 data = fits.getdata(p).astype(float)
+                h_b, w_b = data.shape
                 xy_b, flux_b = detect_stars(data, max_stars=int(args.max_stars))
                 if len(xy_b) == 0:
                     raise RuntimeError("No stars detected.")
@@ -419,6 +478,7 @@ def main():
             measurements.append(vals)
             used_files.append(stars_npz_path if npz_mode else p)
             matched_counts.append((frame_label, len(ai_idx)))
+            overlap_rect_by_frame[frame_label] = compute_overlap_rect_xy_bounds(w_ref, h_ref, w_b, h_b, dx0, dy0)
 
             # Collect stars only detected in non-reference frames.
             unmatched = np.ones(len(xy_b), dtype=bool)
@@ -512,6 +572,7 @@ def main():
             )
 
     nonref_plot_xy = np.empty((0, 2), dtype=np.float64)
+    nonref_plot_xy_inner_all = np.empty((0, 2), dtype=np.float64)
     nonref_count = len(nonref_xy)
     if nonref_count > 0:
         nonref_xy_arr = np.asarray(nonref_xy, dtype=np.float64)
@@ -520,6 +581,14 @@ def main():
         nonref_n_det = np.asarray(nonref_n_detections, dtype=np.int32)
         # Primary key: median flux (desc), tie-breakers: detections (desc), frames (desc).
         nonref_order = np.lexsort((-nonref_n_frames, -nonref_n_det, -nonref_median_flux))
+        nonref_inside = np.zeros(nonref_count, dtype=bool)
+        for i in range(nonref_count):
+            xi = float(nonref_xy_arr[i, 0])
+            yi = float(nonref_xy_arr[i, 1])
+            nonref_inside[i] = any(
+                point_in_overlap_rect(xi, yi, overlap_rect_by_frame.get(frame_name))
+                for frame_name in nonref_frame_sets[i]
+            )
 
         with out_csv_nonref.open("w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
@@ -548,11 +617,57 @@ def main():
                     ]
                 )
 
+        with out_csv_nonref_inner_border.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(
+                [
+                    "rank",
+                    "x",
+                    "y",
+                    "n_frames_detected",
+                    "n_detections",
+                    "median_flux_norm",
+                    "frames",
+                ]
+            )
+            rank_inner = 1
+            for i in nonref_order:
+                if not nonref_inside[i]:
+                    continue
+                frame_names = ";".join(sorted(nonref_frame_sets[i]))
+                writer.writerow(
+                    [
+                        rank_inner,
+                        f"{nonref_xy_arr[i, 0]:.4f}",
+                        f"{nonref_xy_arr[i, 1]:.4f}",
+                        int(nonref_n_frames[i]),
+                        int(nonref_n_det[i]),
+                        f"{nonref_median_flux[i]:.8f}",
+                        frame_names,
+                    ]
+                )
+                rank_inner += 1
+
         top_k_nonref = int(args.top_k_nonref)
-        keep_n = nonref_count if top_k_nonref <= 0 else min(top_k_nonref, nonref_count)
-        nonref_plot_xy = nonref_xy_arr[nonref_order[:keep_n]]
+        nonref_order_inside = nonref_order[nonref_inside[nonref_order]]
+        nonref_plot_xy_inner_all = nonref_xy_arr[nonref_order_inside]
+        keep_n = len(nonref_order_inside) if top_k_nonref <= 0 else min(top_k_nonref, len(nonref_order_inside))
+        nonref_plot_xy = nonref_xy_arr[nonref_order_inside[:keep_n]]
     else:
         with out_csv_nonref.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(
+                [
+                    "rank",
+                    "x",
+                    "y",
+                    "n_frames_detected",
+                    "n_detections",
+                    "median_flux_norm",
+                    "frames",
+                ]
+            )
+        with out_csv_nonref_inner_border.open("w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             writer.writerow(
                 [
@@ -608,6 +723,39 @@ def main():
         keep_m = len(ref_missing_order) if top_k_ref_missing <= 0 else min(top_k_ref_missing, len(ref_missing_order))
         ref_missing_plot_xy = xy_ref[ref_missing_order[:keep_m], :]
 
+    overlap_payload = {
+        "coordinate_system": "reference_image_xy",
+        "note": "Border is approximated by axis-aligned rectangle intersection using target->reference translation dx0/dy0.",
+        "frames": [],
+    }
+    for frame_name in sorted(overlap_rect_by_frame.keys()):
+        rect = overlap_rect_by_frame[frame_name]
+        if rect is None:
+            overlap_payload["frames"].append({"frame": frame_name, "has_overlap": False})
+            continue
+        x_min, x_max, y_min, y_max = rect
+        overlap_payload["frames"].append(
+            {
+                "frame": frame_name,
+                "has_overlap": True,
+                "polygon_xy": [
+                    [float(x_min), float(y_min)],
+                    [float(x_max), float(y_min)],
+                    [float(x_max), float(y_max)],
+                    [float(x_min), float(y_max)],
+                ],
+                "expression": f"{x_min:.6f} <= x <= {x_max:.6f} and {y_min:.6f} <= y <= {y_max:.6f}",
+                "half_planes": [
+                    {"a": 1.0, "b": 0.0, "c": -float(x_min), "ineq": ">=0", "expr": "x - x_min >= 0"},
+                    {"a": -1.0, "b": 0.0, "c": float(x_max), "ineq": ">=0", "expr": "x_max - x >= 0"},
+                    {"a": 0.0, "b": 1.0, "c": -float(y_min), "ineq": ">=0", "expr": "y - y_min >= 0"},
+                    {"a": 0.0, "b": -1.0, "c": float(y_max), "ineq": ">=0", "expr": "y_max - y >= 0"},
+                ],
+            }
+        )
+    with out_overlap_expr.open("w", encoding="utf-8") as f:
+        json.dump(overlap_payload, f, ensure_ascii=False, indent=2)
+
     save_candidate_scatter(
         ref_data,
         xy_ref[:, 0],
@@ -626,7 +774,7 @@ def main():
         np.nan_to_num(score, nan=-1.0),
         int(args.top_k),
         out_png_aligned,
-        nonref_xy=nonref_plot_xy,
+        nonref_xy=nonref_plot_xy_inner_all,
         ref_missing_xy=ref_missing_plot_xy,
         mirror_vertical=bool(args.mirror_vertical_png),
     )
@@ -641,7 +789,9 @@ def main():
     print(f"Candidates ranked: {len(order)}")
     print(f"WROTE {out_csv}")
     print(f"WROTE {out_csv_nonref}")
+    print(f"WROTE {out_csv_nonref_inner_border}")
     print(f"WROTE {out_csv_ref_missing}")
+    print(f"WROTE {out_overlap_expr}")
     print(f"WROTE {out_png}")
     print(f"WROTE {out_png_aligned}")
     print(f"Non-reference-only stars: {nonref_count}")

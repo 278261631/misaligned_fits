@@ -41,6 +41,8 @@ python "D:\github\misaligned_fits\rank_variable_candidates.py" ^
     --out-csv-nonref "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_/variable_candidates_nonref_only.csv" ^
     --out-csv-ref-missing "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_/variable_candidates_ref_only_missing_in_targets.csv" ^
     --out-png "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_/variable_candidates_rank.png" ^
+    --out-overlap-expr "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_/ref_target_overlap_polygon_expr.json" ^
+    --out-csv-nonref-inner-border "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_/variable_candidates_nonref_only_inner_border.csv" ^
     --min-observations 2
 
     // --out-png "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_/variable_candidates_rank.png" ^
@@ -90,6 +92,8 @@ python "D:\github\misaligned_fits\rank_variable_candidates.py" ^
     --out-csv-nonref "D:/align/GY3_K043-8_UTC20260310_163817_-25C_/variable_candidates_nonref_only.csv" ^
     --out-csv-ref-missing "D:/align/GY3_K043-8_UTC20260310_163817_-25C_/variable_candidates_ref_only_missing_in_targets.csv" ^
     --out-png "D:/align/GY3_K043-8_UTC20260310_163817_-25C_/variable_candidates_rank.png" ^
+    --out-overlap-expr "D:/align/GY3_K043-8_UTC20260310_163817_-25C_/ref_target_overlap_polygon_expr.json" ^
+    --out-csv-nonref-inner-border "D:/align/GY3_K043-8_UTC20260310_163817_-25C_/variable_candidates_nonref_only_inner_border.csv" ^
     --min-observations 2
 
 
