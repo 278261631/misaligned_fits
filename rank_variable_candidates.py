@@ -68,16 +68,29 @@ def parse_args():
     parser.add_argument("--min-observations", type=int, default=5, help="Minimum matched frames required per star.")
     parser.add_argument("--top-k", type=int, default=200, help="Top K candidates to highlight in the scatter plot.")
     parser.add_argument(
+        "--mirror-vertical-png",
+        dest="mirror_vertical_png",
+        action="store_true",
+        help="Vertically mirror output candidate PNG overlays (enabled by default).",
+    )
+    parser.add_argument(
+        "--no-mirror-vertical-png",
+        dest="mirror_vertical_png",
+        action="store_false",
+        help="Disable vertical mirroring for output candidate PNG overlays.",
+    )
+    parser.set_defaults(mirror_vertical_png=True)
+    parser.add_argument(
         "--top-k-nonref",
         type=int,
-        default=200,
-        help="Top K non-reference-only stars to mark on plots.",
+        default=0,
+        help="Top K non-reference-only stars to mark on plots (<=0 means show all).",
     )
     parser.add_argument(
         "--top-k-ref-missing",
         type=int,
-        default=200,
-        help="Top K reference-only missing stars to mark on plots.",
+        default=0,
+        help="Top K reference-only missing stars to mark on plots (<=0 means show all).",
     )
     return parser.parse_args()
 
@@ -145,7 +158,9 @@ def build_matches_from_alignment(xy_a, xy_b, cx, cy, fit_degree, match_radius):
     return ai_idx, bi_idx
 
 
-def save_candidate_scatter(ref_img, x, y, score, top_k, out_png: Path, nonref_xy=None, ref_missing_xy=None):
+def save_candidate_scatter(
+    ref_img, x, y, score, top_k, out_png: Path, nonref_xy=None, ref_missing_xy=None, mirror_vertical=True
+):
     finite = np.isfinite(ref_img)
     fill = np.nanmedian(ref_img[finite]) if np.any(finite) else 0.0
     view = np.where(finite, ref_img, fill)
@@ -193,13 +208,17 @@ def save_candidate_scatter(ref_img, x, y, score, top_k, out_png: Path, nonref_xy
         plt.legend(loc="upper right", framealpha=0.7)
     plt.colorbar(sc, label="Variability score")
     plt.title(f"Top {len(keep)} variable candidates")
+    if mirror_vertical:
+        plt.gca().invert_yaxis()
     plt.axis("off")
     plt.tight_layout()
     plt.savefig(out_png, dpi=150)
     plt.close()
 
 
-def save_candidate_overlay_exact(ref_img, x, y, score, top_k, out_png: Path, nonref_xy=None, ref_missing_xy=None):
+def save_candidate_overlay_exact(
+    ref_img, x, y, score, top_k, out_png: Path, nonref_xy=None, ref_missing_xy=None, mirror_vertical=True
+):
     finite = np.isfinite(ref_img)
     fill = np.nanmedian(ref_img[finite]) if np.any(finite) else 0.0
     view = np.where(finite, ref_img, fill)
@@ -246,7 +265,10 @@ def save_candidate_overlay_exact(ref_img, x, y, score, top_k, out_png: Path, non
             edgecolors="white",
         )
     ax.set_xlim(-0.5, w - 0.5)
-    ax.set_ylim(-0.5, h - 0.5)
+    if mirror_vertical:
+        ax.set_ylim(h - 0.5, -0.5)
+    else:
+        ax.set_ylim(-0.5, h - 0.5)
     ax.set_axis_off()
     fig.savefig(out_png, dpi=dpi, bbox_inches=None, pad_inches=0)
     plt.close(fig)
@@ -525,7 +547,8 @@ def main():
                     ]
                 )
 
-        keep_n = min(int(args.top_k_nonref), nonref_count)
+        top_k_nonref = int(args.top_k_nonref)
+        keep_n = nonref_count if top_k_nonref <= 0 else min(top_k_nonref, nonref_count)
         nonref_plot_xy = nonref_xy_arr[nonref_order[:keep_n]]
     else:
         with out_csv_nonref.open("w", newline="", encoding="utf-8") as f:
@@ -580,7 +603,8 @@ def main():
                 ]
             )
     if len(ref_missing_order) > 0:
-        keep_m = min(int(args.top_k_ref_missing), len(ref_missing_order))
+        top_k_ref_missing = int(args.top_k_ref_missing)
+        keep_m = len(ref_missing_order) if top_k_ref_missing <= 0 else min(top_k_ref_missing, len(ref_missing_order))
         ref_missing_plot_xy = xy_ref[ref_missing_order[:keep_m], :]
 
     save_candidate_scatter(
@@ -592,6 +616,7 @@ def main():
         out_png,
         nonref_xy=nonref_plot_xy,
         ref_missing_xy=ref_missing_plot_xy,
+        mirror_vertical=bool(args.mirror_vertical_png),
     )
     save_candidate_overlay_exact(
         ref_data,
@@ -602,6 +627,7 @@ def main():
         out_png_aligned,
         nonref_xy=nonref_plot_xy,
         ref_missing_xy=ref_missing_plot_xy,
+        mirror_vertical=bool(args.mirror_vertical_png),
     )
 
     print(f"Reference: {ref_path}")
