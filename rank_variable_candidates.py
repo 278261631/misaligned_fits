@@ -572,6 +572,7 @@ def main():
             )
 
     nonref_plot_xy = np.empty((0, 2), dtype=np.float64)
+    nonref_plot_xy_rank = np.empty((0, 2), dtype=np.float64)
     nonref_plot_xy_inner_all = np.empty((0, 2), dtype=np.float64)
     nonref_count = len(nonref_xy)
     if nonref_count > 0:
@@ -653,6 +654,8 @@ def main():
         nonref_plot_xy_inner_all = nonref_xy_arr[nonref_order_inside]
         keep_n = len(nonref_order_inside) if top_k_nonref <= 0 else min(top_k_nonref, len(nonref_order_inside))
         nonref_plot_xy = nonref_xy_arr[nonref_order_inside[:keep_n]]
+        keep_n_rank = min(400, len(nonref_order_inside))
+        nonref_plot_xy_rank = nonref_xy_arr[nonref_order_inside[:keep_n_rank]]
     else:
         with out_csv_nonref.open("w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
@@ -687,6 +690,7 @@ def main():
     ref_missing_mask = n_target_obs == 0
     ref_missing_idx = np.where(ref_missing_mask)[0]
     ref_missing_plot_xy = np.empty((0, 2), dtype=np.float64)
+    ref_missing_plot_xy_rank = np.empty((0, 2), dtype=np.float64)
     if len(ref_missing_idx) > 0:
         ref_only_flux = np.asarray(flux_ref[ref_missing_idx], dtype=np.float64)
         ref_missing_order = ref_missing_idx[np.argsort(ref_only_flux)[::-1]]
@@ -722,6 +726,8 @@ def main():
         top_k_ref_missing = int(args.top_k_ref_missing)
         keep_m = len(ref_missing_order) if top_k_ref_missing <= 0 else min(top_k_ref_missing, len(ref_missing_order))
         ref_missing_plot_xy = xy_ref[ref_missing_order[:keep_m], :]
+        keep_m_rank = min(200, len(ref_missing_order))
+        ref_missing_plot_xy_rank = xy_ref[ref_missing_order[:keep_m_rank], :]
 
     overlap_payload = {
         "coordinate_system": "reference_image_xy",
@@ -761,10 +767,10 @@ def main():
         xy_ref[:, 0],
         xy_ref[:, 1],
         np.nan_to_num(score, nan=-1.0),
-        int(args.top_k),
+        400,
         out_png,
-        nonref_xy=nonref_plot_xy,
-        ref_missing_xy=ref_missing_plot_xy,
+        nonref_xy=nonref_plot_xy_rank,
+        ref_missing_xy=ref_missing_plot_xy_rank,
         mirror_vertical=bool(args.mirror_vertical_png),
     )
     save_candidate_overlay_exact(
@@ -772,10 +778,10 @@ def main():
         xy_ref[:, 0],
         xy_ref[:, 1],
         np.nan_to_num(score, nan=-1.0),
-        int(args.top_k),
+        400,
         out_png_aligned,
-        nonref_xy=nonref_plot_xy_inner_all,
-        ref_missing_xy=ref_missing_plot_xy,
+        nonref_xy=nonref_plot_xy_rank,
+        ref_missing_xy=ref_missing_plot_xy_rank,
         mirror_vertical=bool(args.mirror_vertical_png),
     )
 
