@@ -259,7 +259,18 @@ def save_candidate_scatter(
 
 
 def save_candidate_overlay_exact(
-    ref_img, x, y, score, top_k, out_png: Path, nonref_xy=None, ref_missing_xy=None, mirror_vertical=True
+    ref_img,
+    x,
+    y,
+    score,
+    top_k,
+    out_png: Path,
+    nonref_xy=None,
+    ref_missing_xy=None,
+    mirror_vertical=True,
+    annotate_rank=False,
+    nonref_ranks=None,
+    ref_missing_ranks=None,
 ):
     finite = np.isfinite(ref_img)
     fill = np.nanmedian(ref_img[finite]) if np.any(finite) else 0.0
@@ -285,6 +296,26 @@ def save_candidate_overlay_exact(
         edgecolors="white",
         linewidths=0.25,
     )
+    if annotate_rank and len(keep) > 0:
+        score_keep = np.asarray(score[keep], dtype=np.float64)
+        if np.nanmax(score_keep) > np.nanmin(score_keep):
+            cmap_norm = plt.Normalize(vmin=float(np.nanmin(score_keep)), vmax=float(np.nanmax(score_keep)))
+        else:
+            cmap_norm = plt.Normalize(vmin=float(np.nanmin(score_keep)) - 1.0, vmax=float(np.nanmax(score_keep)) + 1.0)
+        cmap = plt.get_cmap("turbo")
+        for j, idx in enumerate(keep):
+            rank_txt = str(j + 1)
+            color = cmap(cmap_norm(float(score[idx])))
+            ax.text(
+                float(x[idx]) + 1.8,
+                float(y[idx]) + 1.8,
+                rank_txt,
+                color=color,
+                fontsize=6,
+                ha="left",
+                va="bottom",
+                alpha=0.95,
+            )
     if nonref_xy is not None and len(nonref_xy) > 0:
         ax.scatter(
             nonref_xy[:, 0],
@@ -295,6 +326,20 @@ def save_candidate_overlay_exact(
             alpha=0.95,
             linewidths=1.0,
         )
+        if annotate_rank:
+            if nonref_ranks is None:
+                nonref_ranks = np.arange(1, len(nonref_xy) + 1, dtype=int)
+            for q, r in zip(nonref_xy, nonref_ranks):
+                ax.text(
+                    float(q[0]) + 1.8,
+                    float(q[1]) + 1.8,
+                    str(int(r)),
+                    color="#00E5FF",
+                    fontsize=6,
+                    ha="left",
+                    va="bottom",
+                    alpha=0.95,
+                )
     if ref_missing_xy is not None and len(ref_missing_xy) > 0:
         ax.scatter(
             ref_missing_xy[:, 0],
@@ -306,6 +351,20 @@ def save_candidate_overlay_exact(
             linewidths=0.5,
             edgecolors="white",
         )
+        if annotate_rank:
+            if ref_missing_ranks is None:
+                ref_missing_ranks = np.arange(1, len(ref_missing_xy) + 1, dtype=int)
+            for q, r in zip(ref_missing_xy, ref_missing_ranks):
+                ax.text(
+                    float(q[0]) + 1.8,
+                    float(q[1]) + 1.8,
+                    str(int(r)),
+                    color="#FF3EA5",
+                    fontsize=6,
+                    ha="left",
+                    va="bottom",
+                    alpha=0.95,
+                )
     ax.set_xlim(-0.5, w - 0.5)
     if mirror_vertical:
         ax.set_ylim(h - 0.5, -0.5)
@@ -574,6 +633,7 @@ def main():
     nonref_plot_xy = np.empty((0, 2), dtype=np.float64)
     nonref_plot_xy_rank = np.empty((0, 2), dtype=np.float64)
     nonref_plot_xy_inner_all = np.empty((0, 2), dtype=np.float64)
+    nonref_plot_ranks_rank = np.empty((0,), dtype=np.int32)
     nonref_count = len(nonref_xy)
     if nonref_count > 0:
         nonref_xy_arr = np.asarray(nonref_xy, dtype=np.float64)
@@ -656,6 +716,7 @@ def main():
         nonref_plot_xy = nonref_xy_arr[nonref_order_inside[:keep_n]]
         keep_n_rank = min(400, len(nonref_order_inside))
         nonref_plot_xy_rank = nonref_xy_arr[nonref_order_inside[:keep_n_rank]]
+        nonref_plot_ranks_rank = np.arange(1, keep_n_rank + 1, dtype=np.int32)
     else:
         with out_csv_nonref.open("w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
@@ -691,6 +752,7 @@ def main():
     ref_missing_idx = np.where(ref_missing_mask)[0]
     ref_missing_plot_xy = np.empty((0, 2), dtype=np.float64)
     ref_missing_plot_xy_rank = np.empty((0, 2), dtype=np.float64)
+    ref_missing_plot_ranks_rank = np.empty((0,), dtype=np.int32)
     if len(ref_missing_idx) > 0:
         ref_only_flux = np.asarray(flux_ref[ref_missing_idx], dtype=np.float64)
         ref_missing_order = ref_missing_idx[np.argsort(ref_only_flux)[::-1]]
@@ -728,6 +790,7 @@ def main():
         ref_missing_plot_xy = xy_ref[ref_missing_order[:keep_m], :]
         keep_m_rank = min(200, len(ref_missing_order))
         ref_missing_plot_xy_rank = xy_ref[ref_missing_order[:keep_m_rank], :]
+        ref_missing_plot_ranks_rank = np.arange(1, keep_m_rank + 1, dtype=np.int32)
 
     overlap_payload = {
         "coordinate_system": "reference_image_xy",
@@ -783,6 +846,9 @@ def main():
         nonref_xy=nonref_plot_xy_rank,
         ref_missing_xy=ref_missing_plot_xy_rank,
         mirror_vertical=bool(args.mirror_vertical_png),
+        annotate_rank=True,
+        nonref_ranks=nonref_plot_ranks_rank,
+        ref_missing_ranks=ref_missing_plot_ranks_rank,
     )
 
     print(f"Reference: {ref_path}")
