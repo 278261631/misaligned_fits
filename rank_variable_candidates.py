@@ -6,6 +6,7 @@ import json
 import matplotlib.pyplot as plt
 import numpy as np
 from astropy.io import fits
+from matplotlib.path import Path as MplPath
 from astropy.visualization import ImageNormalize, PercentileInterval, SqrtStretch
 from scipy.spatial import cKDTree
 
@@ -49,6 +50,12 @@ def parse_args():
         default=None,
         help="Output JSON with ref-target overlap polygon expressions (per used frame).",
     )
+    parser.add_argument(
+        "--out-overlap-expr-png",
+        type=Path,
+        default=None,
+        help="Optional PNG path to visualize final overlap polygons.",
+    )
     parser.add_argument("--out-png", type=Path, default=None, help="Output candidate scatter PNG path.")
     parser.add_argument("--max-stars", type=int, default=5000, help="Maximum stars detected per frame.")
     parser.add_argument("--match-radius", type=float, default=24.0, help="Star matching radius in pixels.")
@@ -77,6 +84,12 @@ def parse_args():
         type=Path,
         default=None,
         help="Optional image FITS path used only as plot background.",
+    )
+    parser.add_argument(
+        "--ref-valid-region",
+        type=Path,
+        default=None,
+        help="Optional effective-region JSON exported by export_fits_stars.py; points outside polygons are filtered.",
     )
     parser.add_argument("--min-observations", type=int, default=5, help="Minimum matched frames required per star.")
     parser.add_argument("--top-k", type=int, default=200, help="Top K candidates to highlight in the scatter plot.")
@@ -161,6 +174,137 @@ def point_in_overlap_rect(x, y, rect):
         return False
     x_min, x_max, y_min, y_max = rect
     return (x >= x_min) and (x <= x_max) and (y >= y_min) and (y <= y_max)
+
+
+def _polygon_area_abs(poly_xy):
+    if poly_xy.shape[0] < 3:
+        return 0.0
+    x = poly_xy[:, 0]
+    y = poly_xy[:, 1]
+    return 0.5 * float(np.abs(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1))))
+
+
+def _close_ring(poly_xy):
+    if poly_xy.shape[0] == 0:
+        return poly_xy
+    if np.allclose(poly_xy[0], poly_xy[-1]):
+        return poly_xy
+    return np.vstack([poly_xy, poly_xy[0]])
+
+
+def load_valid_region_polygons(path: Path):
+    with path.open("r", encoding="utf-8") as f:
+        payload = json.load(f)
+    polys = payload.get("polygons_xy", [])
+    if not isinstance(polys, list) or len(polys) == 0:
+        raise RuntimeError(f"Invalid valid-region JSON (polygons_xy missing/empty): {path}")
+    polygons = []
+    for poly in polys:
+        arr = np.asarray(poly, dtype=np.float64)
+        if arr.ndim != 2 or arr.shape[1] != 2 or arr.shape[0] < 3:
+            continue
+        arr = _close_ring(arr)
+        if _polygon_area_abs(arr[:-1]) <= 0.0:
+            continue
+        polygons.append(arr[:-1])
+    if len(polygons) == 0:
+        raise RuntimeError(f"Invalid valid-region JSON (no usable polygons): {path}")
+    return polygons
+
+
+def polygons_to_paths(polygons_xy):
+    paths = []
+    for poly in polygons_xy:
+        arr = np.asarray(poly, dtype=np.float64)
+        if arr.ndim != 2 or arr.shape[1] != 2 or arr.shape[0] < 3:
+            continue
+        paths.append(MplPath(_close_ring(arr)))
+    return paths
+
+
+def point_in_any_region(x, y, region_paths):
+    return any(p.contains_point((float(x), float(y)), radius=1e-9) for p in region_paths)
+
+
+def _clip_poly_halfspace(poly, keep_fn, intersect_fn):
+    if len(poly) == 0:
+        return np.empty((0, 2), dtype=np.float64)
+    out = []
+    n = len(poly)
+    for i in range(n):
+        a = poly[i]
+        b = poly[(i + 1) % n]
+        ina = keep_fn(a)
+        inb = keep_fn(b)
+        if ina and inb:
+            out.append(b)
+        elif ina and not inb:
+            out.append(intersect_fn(a, b))
+        elif (not ina) and inb:
+            out.append(intersect_fn(a, b))
+            out.append(b)
+    if len(out) == 0:
+        return np.empty((0, 2), dtype=np.float64)
+    return np.asarray(out, dtype=np.float64)
+
+
+def clip_polygon_with_rect(poly, rect):
+    x_min, x_max, y_min, y_max = rect
+    out = np.asarray(poly, dtype=np.float64)
+    if len(out) == 0:
+        return out
+
+    def inter_vertical(a, b, x0):
+        dx = b[0] - a[0]
+        if abs(dx) < 1e-12:
+            return np.array([x0, a[1]], dtype=np.float64)
+        t = (x0 - a[0]) / dx
+        return np.array([x0, a[1] + t * (b[1] - a[1])], dtype=np.float64)
+
+    def inter_horizontal(a, b, y0):
+        dy = b[1] - a[1]
+        if abs(dy) < 1e-12:
+            return np.array([a[0], y0], dtype=np.float64)
+        t = (y0 - a[1]) / dy
+        return np.array([a[0] + t * (b[0] - a[0]), y0], dtype=np.float64)
+
+    out = _clip_poly_halfspace(out, lambda p: p[0] >= x_min - 1e-12, lambda a, b: inter_vertical(a, b, x_min))
+    out = _clip_poly_halfspace(out, lambda p: p[0] <= x_max + 1e-12, lambda a, b: inter_vertical(a, b, x_max))
+    out = _clip_poly_halfspace(out, lambda p: p[1] >= y_min - 1e-12, lambda a, b: inter_horizontal(a, b, y_min))
+    out = _clip_poly_halfspace(out, lambda p: p[1] <= y_max + 1e-12, lambda a, b: inter_horizontal(a, b, y_max))
+    if len(out) < 3:
+        return np.empty((0, 2), dtype=np.float64)
+    return out
+
+
+def save_overlap_expr_png(overlap_by_frame, out_png: Path, h_ref, w_ref, mirror_vertical=False):
+    out_png.parent.mkdir(parents=True, exist_ok=True)
+    fig = plt.figure(figsize=(10, 8))
+    ax = fig.add_subplot(111)
+    ax.set_xlim(-0.5, float(w_ref) - 0.5)
+    if mirror_vertical:
+        ax.set_ylim(float(h_ref) - 0.5, -0.5)
+    else:
+        ax.set_ylim(-0.5, float(h_ref) - 0.5)
+    ax.set_aspect("equal", adjustable="box")
+    ax.set_facecolor("#111111")
+    cmap = plt.get_cmap("tab20")
+    for k, frame_name in enumerate(sorted(overlap_by_frame.keys())):
+        polys = overlap_by_frame[frame_name]
+        if len(polys) == 0:
+            continue
+        color = cmap(k % 20)
+        for j, poly in enumerate(polys):
+            ring = _close_ring(poly)
+            ax.plot(ring[:, 0], ring[:, 1], color=color, linewidth=1.2, alpha=0.9, label=frame_name if j == 0 else None)
+    ax.set_title("Final overlap polygons (effective ∩ ref-target overlap)")
+    ax.set_axis_off()
+    handles, labels = ax.get_legend_handles_labels()
+    if len(handles) > 0 and len(handles) <= 20:
+        ax.legend(loc="upper right", framealpha=0.7, fontsize=7)
+    fig.tight_layout()
+    fig.savefig(out_png, dpi=150)
+    plt.close(fig)
 
 
 def load_stars_npz(path: Path, return_meta=False):
@@ -415,6 +559,7 @@ def main():
     out_overlap_expr = (
         args.out_overlap_expr if args.out_overlap_expr is not None else (base / "ref_target_overlap_polygon_expr.json")
     )
+    out_overlap_expr_png = args.out_overlap_expr_png if args.out_overlap_expr_png is not None else None
     out_png = args.out_png if args.out_png is not None else (base / "variable_candidates_rank.png")
     out_png_aligned = out_png.with_name(f"{out_png.stem}_aligned_to_a{out_png.suffix}")
     out_csv.parent.mkdir(parents=True, exist_ok=True)
@@ -422,10 +567,20 @@ def main():
     out_csv_ref_missing.parent.mkdir(parents=True, exist_ok=True)
     out_csv_nonref_inner_border.parent.mkdir(parents=True, exist_ok=True)
     out_overlap_expr.parent.mkdir(parents=True, exist_ok=True)
+    if out_overlap_expr_png is not None:
+        out_overlap_expr_png.parent.mkdir(parents=True, exist_ok=True)
     out_png.parent.mkdir(parents=True, exist_ok=True)
 
     ref_data = None
     ref_image_path = resolve_path(base, args.ref_image) if args.ref_image is not None else None
+    ref_valid_region_path = resolve_path(base, args.ref_valid_region) if args.ref_valid_region is not None else None
+    ref_valid_region_polygons = None
+    ref_valid_region_paths = None
+    if ref_valid_region_path is not None:
+        if not ref_valid_region_path.exists():
+            raise RuntimeError(f"Reference valid-region JSON not found: {ref_valid_region_path}")
+        ref_valid_region_polygons = load_valid_region_polygons(ref_valid_region_path)
+        ref_valid_region_paths = polygons_to_paths(ref_valid_region_polygons)
     if ref_image_path is not None:
         if not ref_image_path.exists():
             raise RuntimeError(f"Reference image not found: {ref_image_path}")
@@ -581,11 +736,46 @@ def main():
             label = stars_npz_path.name if npz_mode else p.name
             failed_files.append((label, str(exc)))
 
+    if ref_valid_region_polygons is not None:
+        source_region_polygons = ref_valid_region_polygons
+    else:
+        source_region_polygons = [
+            np.array(
+                [
+                    [-0.5, -0.5],
+                    [float(w_ref) - 0.5, -0.5],
+                    [float(w_ref) - 0.5, float(h_ref) - 0.5],
+                    [-0.5, float(h_ref) - 0.5],
+                ],
+                dtype=np.float64,
+            )
+        ]
+    final_overlap_polygons_by_frame = {}
+    final_overlap_paths_by_frame = {}
+    for frame_name, rect in overlap_rect_by_frame.items():
+        frame_polys = []
+        if rect is not None:
+            for poly in source_region_polygons:
+                clipped = clip_polygon_with_rect(poly, rect)
+                if len(clipped) < 3:
+                    continue
+                if _polygon_area_abs(clipped) <= 1e-9:
+                    continue
+                frame_polys.append(clipped)
+        final_overlap_polygons_by_frame[frame_name] = frame_polys
+        final_overlap_paths_by_frame[frame_name] = polygons_to_paths(frame_polys)
+
     flux_mat = np.vstack(measurements).T  # [n_ref, n_frames_used]
     n_obs = np.sum(np.isfinite(flux_mat), axis=1)
     med_flux = np.nanmedian(flux_mat, axis=1)
+    ref_region_ok = np.ones(n_ref, dtype=bool)
+    if ref_valid_region_paths is not None:
+        ref_region_ok = np.array(
+            [point_in_any_region(xy_ref[i, 0], xy_ref[i, 1], ref_valid_region_paths) for i in range(n_ref)],
+            dtype=bool,
+        )
 
-    valid = (n_obs >= int(args.min_observations)) & np.isfinite(med_flux) & (med_flux > 0.0)
+    valid = (n_obs >= int(args.min_observations)) & np.isfinite(med_flux) & (med_flux > 0.0) & ref_region_ok
     if np.count_nonzero(valid) == 0:
         raise RuntimeError("No stars meet min observation requirement.")
 
@@ -646,10 +836,11 @@ def main():
         for i in range(nonref_count):
             xi = float(nonref_xy_arr[i, 0])
             yi = float(nonref_xy_arr[i, 1])
-            nonref_inside[i] = any(
-                point_in_overlap_rect(xi, yi, overlap_rect_by_frame.get(frame_name))
+            inside_overlap = any(
+                point_in_any_region(xi, yi, final_overlap_paths_by_frame.get(frame_name, []))
                 for frame_name in nonref_frame_sets[i]
             )
+            nonref_inside[i] = inside_overlap
 
         with out_csv_nonref.open("w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
@@ -748,7 +939,7 @@ def main():
     # Stars detected in reference but never matched in any successfully used target frame.
     n_used_targets = max(len(used_files) - 1, 0)
     n_target_obs = np.maximum(n_obs - 1, 0).astype(np.int32)
-    ref_missing_mask = n_target_obs == 0
+    ref_missing_mask = (n_target_obs == 0) & ref_region_ok
     ref_missing_idx = np.where(ref_missing_mask)[0]
     ref_missing_plot_xy = np.empty((0, 2), dtype=np.float64)
     ref_missing_plot_xy_rank = np.empty((0, 2), dtype=np.float64)
@@ -794,36 +985,33 @@ def main():
 
     overlap_payload = {
         "coordinate_system": "reference_image_xy",
-        "note": "Border is approximated by axis-aligned rectangle intersection using target->reference translation dx0/dy0.",
+        "note": "Final geometric intersection polygons: (reference effective region) ∩ (ref-target overlap by dx0/dy0).",
         "frames": [],
     }
-    for frame_name in sorted(overlap_rect_by_frame.keys()):
-        rect = overlap_rect_by_frame[frame_name]
-        if rect is None:
+    for frame_name in sorted(final_overlap_polygons_by_frame.keys()):
+        polys = final_overlap_polygons_by_frame[frame_name]
+        if len(polys) == 0:
             overlap_payload["frames"].append({"frame": frame_name, "has_overlap": False})
             continue
-        x_min, x_max, y_min, y_max = rect
         overlap_payload["frames"].append(
             {
                 "frame": frame_name,
                 "has_overlap": True,
-                "polygon_xy": [
-                    [float(x_min), float(y_min)],
-                    [float(x_max), float(y_min)],
-                    [float(x_max), float(y_max)],
-                    [float(x_min), float(y_max)],
-                ],
-                "expression": f"{x_min:.6f} <= x <= {x_max:.6f} and {y_min:.6f} <= y <= {y_max:.6f}",
-                "half_planes": [
-                    {"a": 1.0, "b": 0.0, "c": -float(x_min), "ineq": ">=0", "expr": "x - x_min >= 0"},
-                    {"a": -1.0, "b": 0.0, "c": float(x_max), "ineq": ">=0", "expr": "x_max - x >= 0"},
-                    {"a": 0.0, "b": 1.0, "c": -float(y_min), "ineq": ">=0", "expr": "y - y_min >= 0"},
-                    {"a": 0.0, "b": -1.0, "c": float(y_max), "ineq": ">=0", "expr": "y_max - y >= 0"},
-                ],
+                "polygon_count": int(len(polys)),
+                "polygons_xy": [_close_ring(p).tolist() for p in polys],
+                "areas": [float(_polygon_area_abs(p)) for p in polys],
             }
         )
     with out_overlap_expr.open("w", encoding="utf-8") as f:
         json.dump(overlap_payload, f, ensure_ascii=False, indent=2)
+    if out_overlap_expr_png is not None:
+        save_overlap_expr_png(
+            final_overlap_polygons_by_frame,
+            out_overlap_expr_png,
+            h_ref=h_ref,
+            w_ref=w_ref,
+            mirror_vertical=bool(args.mirror_vertical_png),
+        )
 
     save_candidate_scatter(
         ref_data,
@@ -854,6 +1042,8 @@ def main():
     print(f"Reference: {ref_path}")
     if ref_image_path is not None:
         print(f"Reference image: {ref_image_path}")
+    if ref_valid_region_path is not None:
+        print(f"Reference valid region: {ref_valid_region_path}")
     if npz_mode:
         print(f"Reference stars NPZ: {resolve_path(base, args.ref_stars_all)}")
     print(f"Frames used: {len(used_files)}")
@@ -864,6 +1054,8 @@ def main():
     print(f"WROTE {out_csv_nonref_inner_border}")
     print(f"WROTE {out_csv_ref_missing}")
     print(f"WROTE {out_overlap_expr}")
+    if out_overlap_expr_png is not None:
+        print(f"WROTE {out_overlap_expr_png}")
     print(f"WROTE {out_png}")
     print(f"WROTE {out_png_aligned}")
     print(f"Non-reference-only stars: {nonref_count}")
