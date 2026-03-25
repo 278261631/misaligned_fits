@@ -124,6 +124,12 @@ def parse_args():
         default=400,
         help="Top K rows to write into nonref inner-border CSV (<=0 means no limit).",
     )
+    parser.add_argument(
+        "--nonref-ref-check-radius",
+        type=float,
+        default=10.0,
+        help="Radius in pixels to check whether a nonref point already exists in ref-stars-all (<=0 disables).",
+    )
     return parser.parse_args()
 
 
@@ -421,6 +427,7 @@ def save_candidate_overlay_exact(
     annotate_rank=False,
     nonref_ranks=None,
     ref_missing_ranks=None,
+    nonref_has_ref_nearby_mask=None,
 ):
     finite = np.isfinite(ref_img)
     fill = np.nanmedian(ref_img[finite]) if np.any(finite) else 0.0
@@ -467,15 +474,34 @@ def save_candidate_overlay_exact(
                 alpha=0.95,
             )
     if nonref_xy is not None and len(nonref_xy) > 0:
-        ax.scatter(
-            nonref_xy[:, 0],
-            nonref_xy[:, 1],
-            marker="x",
-            s=32,
-            c="#00E5FF",
-            alpha=0.95,
-            linewidths=1.0,
-        )
+        if nonref_has_ref_nearby_mask is None or len(nonref_has_ref_nearby_mask) != len(nonref_xy):
+            near_mask = np.zeros(len(nonref_xy), dtype=bool)
+        else:
+            near_mask = np.asarray(nonref_has_ref_nearby_mask, dtype=bool)
+        far_mask = ~near_mask
+        if np.any(far_mask):
+            xy_far = nonref_xy[far_mask]
+            ax.scatter(
+                xy_far[:, 0],
+                xy_far[:, 1],
+                marker="x",
+                s=32,
+                c="#00E5FF",
+                alpha=0.95,
+                linewidths=1.0,
+            )
+        if np.any(near_mask):
+            xy_near = nonref_xy[near_mask]
+            ax.scatter(
+                xy_near[:, 0],
+                xy_near[:, 1],
+                marker="o",
+                s=70,
+                facecolors="none",
+                edgecolors="#FFD400",
+                linewidths=1.1,
+                alpha=0.98,
+            )
         if annotate_rank:
             if nonref_ranks is None:
                 nonref_ranks = np.arange(1, len(nonref_xy) + 1, dtype=int)
@@ -829,7 +855,11 @@ def main():
     nonref_plot_xy = np.empty((0, 2), dtype=np.float64)
     nonref_plot_xy_rank = np.empty((0, 2), dtype=np.float64)
     nonref_plot_xy_inner_all = np.empty((0, 2), dtype=np.float64)
+    nonref_has_ref_nearby_mask_rank = np.empty((0,), dtype=bool)
     nonref_plot_ranks_rank = np.empty((0,), dtype=np.int32)
+    nonref_ref_check_radius = float(args.nonref_ref_check_radius)
+    do_nonref_ref_check = (nonref_ref_check_radius > 0.0) and (len(xy_ref) > 0)
+    ref_tree = cKDTree(np.asarray(xy_ref, dtype=np.float64)) if do_nonref_ref_check else None
     nonref_count = len(nonref_xy)
     if nonref_count > 0:
         nonref_xy_arr = np.asarray(nonref_xy, dtype=np.float64)
@@ -886,6 +916,9 @@ def main():
                     "n_detections",
                     "median_flux_norm",
                     "frames",
+                    "has_ref_nearby",
+                    "is_nonref_unique_vs_ref_all",
+                    "nearest_ref_dist_px",
                 ]
             )
             max_inner_csv = int(args.top_k_nonref_inner_border_csv)
@@ -896,6 +929,12 @@ def main():
                 if max_inner_csv > 0 and rank_inner > max_inner_csv:
                     break
                 frame_names = ";".join(sorted(nonref_frame_sets[i]))
+                if do_nonref_ref_check:
+                    nearest_ref_dist = float(ref_tree.query(nonref_xy_arr[i], k=1)[0])
+                    has_ref_nearby = nearest_ref_dist <= nonref_ref_check_radius
+                else:
+                    nearest_ref_dist = float("nan")
+                    has_ref_nearby = False
                 writer.writerow(
                     [
                         rank_inner,
@@ -905,6 +944,9 @@ def main():
                         int(nonref_n_det[i]),
                         f"{nonref_median_flux[i]:.8f}",
                         frame_names,
+                        int(has_ref_nearby),
+                        int(not has_ref_nearby),
+                        f"{nearest_ref_dist:.6f}" if np.isfinite(nearest_ref_dist) else "",
                     ]
                 )
                 rank_inner += 1
@@ -912,10 +954,17 @@ def main():
         top_k_nonref = int(args.top_k_nonref)
         nonref_order_inside = nonref_order[nonref_inside[nonref_order]]
         nonref_plot_xy_inner_all = nonref_xy_arr[nonref_order_inside]
+        if do_nonref_ref_check:
+            nearest_dist_all = ref_tree.query(nonref_xy_arr, k=1)[0]
+            has_ref_nearby_all = np.asarray(nearest_dist_all <= nonref_ref_check_radius, dtype=bool)
+        else:
+            has_ref_nearby_all = np.zeros(nonref_count, dtype=bool)
         keep_n = len(nonref_order_inside) if top_k_nonref <= 0 else min(top_k_nonref, len(nonref_order_inside))
         nonref_plot_xy = nonref_xy_arr[nonref_order_inside[:keep_n]]
         keep_n_rank = min(400, len(nonref_order_inside))
-        nonref_plot_xy_rank = nonref_xy_arr[nonref_order_inside[:keep_n_rank]]
+        rank_idx = nonref_order_inside[:keep_n_rank]
+        nonref_plot_xy_rank = nonref_xy_arr[rank_idx]
+        nonref_has_ref_nearby_mask_rank = np.asarray(has_ref_nearby_all[rank_idx], dtype=bool)
         nonref_plot_ranks_rank = np.arange(1, keep_n_rank + 1, dtype=np.int32)
     else:
         with out_csv_nonref.open("w", newline="", encoding="utf-8") as f:
@@ -929,6 +978,9 @@ def main():
                     "n_detections",
                     "median_flux_norm",
                     "frames",
+                    "has_ref_nearby",
+                    "is_nonref_unique_vs_ref_all",
+                    "nearest_ref_dist_px",
                 ]
             )
         with out_csv_nonref_inner_border.open("w", newline="", encoding="utf-8") as f:
@@ -1046,6 +1098,7 @@ def main():
         annotate_rank=True,
         nonref_ranks=nonref_plot_ranks_rank,
         ref_missing_ranks=ref_missing_plot_ranks_rank,
+        nonref_has_ref_nearby_mask=nonref_has_ref_nearby_mask_rank,
     )
 
     print(f"Reference: {ref_path}")

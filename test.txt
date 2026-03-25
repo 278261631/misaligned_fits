@@ -47,7 +47,7 @@ python "D:\github\misaligned_fits\rank_variable_candidates.py" ^
     --out-overlap-expr "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_/ref_target_overlap_polygon_expr.json" ^
     --out-overlap-expr-png "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_/ref_target_overlap_polygon_expr.png" ^
     --out-csv-nonref-inner-border "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_/variable_candidates_nonref_only_inner_border.csv" ^
-    --min-observations 2
+    --min-observations 2 --nonref-ref-check-radius 10
 
     // --out-png "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_/variable_candidates_rank.png" ^
 
@@ -102,7 +102,7 @@ python "D:\github\misaligned_fits\rank_variable_candidates.py" ^
     --out-overlap-expr "D:/align/GY3_K043-8_UTC20260310_163817_-25C_/ref_target_overlap_polygon_expr.json" ^
     --out-overlap-expr-png "D:/align/GY3_K043-8_UTC20260310_163817_-25C_/ref_target_overlap_polygon_expr.png" ^
     --out-csv-nonref-inner-border "D:/align/GY3_K043-8_UTC20260310_163817_-25C_/variable_candidates_nonref_only_inner_border.csv" ^
-    --min-observations 2
+    --min-observations 2  --nonref-ref-check-radius 10
 
 
 
