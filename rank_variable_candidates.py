@@ -478,23 +478,23 @@ def save_candidate_overlay_exact(
             near_mask = np.zeros(len(nonref_xy), dtype=bool)
         else:
             near_mask = np.asarray(nonref_has_ref_nearby_mask, dtype=bool)
-        far_mask = ~near_mask
-        if np.any(far_mask):
-            xy_far = nonref_xy[far_mask]
+        no_ref_nearby_mask = ~near_mask
+        if np.any(near_mask):
+            xy_near = nonref_xy[near_mask]
             ax.scatter(
-                xy_far[:, 0],
-                xy_far[:, 1],
+                xy_near[:, 0],
+                xy_near[:, 1],
                 marker="x",
                 s=32,
                 c="#00E5FF",
                 alpha=0.95,
                 linewidths=1.0,
             )
-        if np.any(near_mask):
-            xy_near = nonref_xy[near_mask]
+        if np.any(no_ref_nearby_mask):
+            xy_no_ref = nonref_xy[no_ref_nearby_mask]
             ax.scatter(
-                xy_near[:, 0],
-                xy_near[:, 1],
+                xy_no_ref[:, 0],
+                xy_no_ref[:, 1],
                 marker="o",
                 s=70,
                 facecolors="none",
