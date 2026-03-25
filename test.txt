@@ -3,6 +3,8 @@
 python "D:/github/misaligned_fits/export_fits_stars.py" ^
     --fits "D:/missalign/gy2_K043-7.fits" ^
     --out "D:/missalign/gy2_K043-7.stars.npz" ^
+    --out-valid-region "D:/missalign/gy2_K043-7.effective.json" ^
+    --out-valid-region-png "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_/gy2_K043-7.effective.png" ^
     --out-all "D:/missalign/gy2_K043-7.stars.all.npz" ^
     --uniform-grid-x 7 --uniform-grid-y 7 --uniform-per-cell 100
 
@@ -53,6 +55,8 @@ python "D:\github\misaligned_fits\rank_variable_candidates.py" ^
 python "D:/github/misaligned_fits/export_fits_stars.py" ^
     --fits "D:/align/gy3_K043-8.fits" ^
     --out "D:/align/gy3_K043-8.stars.npz" ^
+    --out-valid-region "D:/align/gy3_K043-8.effective.json" ^
+    --out-valid-region-png "D:/align/GY3_K043-8_UTC20260310_163817_-25C_/gy3_K043-8.effective.png" ^
     --out-all "D:/align/gy3_K043-8.stars.all.npz" ^
     --uniform-grid-x 7 --uniform-grid-y 7 --uniform-per-cell 100
 

@@ -1,6 +1,7 @@
 from pathlib import Path
 import argparse
 
+import matplotlib.pyplot as plt
 import numpy as np
 from astropy.io import fits
 
@@ -26,7 +27,96 @@ def parse_args():
         action="store_true",
         help="Disable uniform-grid selection for --out and use global brightness ranking.",
     )
+    parser.add_argument(
+        "--out-valid-region",
+        type=Path,
+        default=None,
+        help="Optional JSON path to export valid image region polygons (valid: finite and non-zero).",
+    )
+    parser.add_argument(
+        "--out-valid-region-png",
+        type=Path,
+        default=None,
+        help="Optional PNG path to visualize valid image region polygons. Skip when not provided.",
+    )
     return parser.parse_args()
+
+
+def _polygon_area_xy(poly_xy):
+    if poly_xy.shape[0] < 3:
+        return 0.0
+    x = poly_xy[:, 0]
+    y = poly_xy[:, 1]
+    return 0.5 * float(np.abs(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1))))
+
+
+def _extract_valid_region_polygons(valid_mask):
+    # Contour at 0.5 extracts boundaries between invalid(0) and valid(1).
+    fig = plt.figure()
+    try:
+        cs = plt.contour(valid_mask.astype(np.uint8), levels=[0.5], origin="lower")
+        segs = cs.allsegs[0] if len(cs.allsegs) > 0 else []
+    finally:
+        plt.close(fig)
+
+    polygons = []
+    for seg in segs:
+        pts = np.asarray(seg, dtype=np.float64)
+        if pts.shape[0] < 3:
+            continue
+        if not np.allclose(pts[0], pts[-1]):
+            pts = np.vstack([pts, pts[0]])
+        area = _polygon_area_xy(pts)
+        if area <= 0.0:
+            continue
+        polygons.append((area, pts))
+    polygons.sort(key=lambda t: t[0], reverse=True)
+    return polygons
+
+
+def export_valid_region(valid_mask, out_json: Path | None, out_png: Path | None, source_fits: Path):
+    if out_json is None and out_png is None:
+        return
+
+    if not np.any(valid_mask):
+        raise RuntimeError("No valid pixels found (only zeros/NaNs).")
+
+    polygons = _extract_valid_region_polygons(valid_mask)
+    if len(polygons) == 0:
+        raise RuntimeError("Failed to extract valid region polygon from mask.")
+
+    if out_json is not None:
+        out_json.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "source_fits": str(source_fits),
+            "valid_rule": "valid = isfinite(pixel) and pixel != 0",
+            "height": int(valid_mask.shape[0]),
+            "width": int(valid_mask.shape[1]),
+            "polygon_count": int(len(polygons)),
+            "polygons_xy": [pts.tolist() for _, pts in polygons],
+            "areas": [float(a) for a, _ in polygons],
+        }
+        import json
+
+        with out_json.open("w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        print(f"WROTE {out_json}")
+
+    if out_png is not None:
+        out_png.parent.mkdir(parents=True, exist_ok=True)
+        fig = plt.figure(figsize=(10, 8))
+        ax = fig.add_subplot(111)
+        ax.imshow(valid_mask.astype(np.uint8), origin="lower", cmap="gray", interpolation="nearest")
+        for idx, (_, pts) in enumerate(polygons, start=1):
+            ax.plot(pts[:, 0], pts[:, 1], "-", linewidth=1.0, label=f"poly_{idx}" if idx <= 8 else None)
+        ax.set_title("Valid Region (finite and non-zero)")
+        ax.set_axis_off()
+        if len(polygons) <= 8:
+            ax.legend(loc="upper right", framealpha=0.7, fontsize=8)
+        fig.tight_layout()
+        fig.savefig(out_png, dpi=150)
+        plt.close(fig)
+        print(f"WROTE {out_png}")
 
 
 def main():
@@ -36,6 +126,14 @@ def main():
     out_all_path = args.out_all if args.out_all is not None else out_path.with_name(f"{out_path.stem}.all.npz")
 
     data = fits.getdata(fits_path).astype(float)
+    valid_mask = np.isfinite(data) & (data != 0.0)
+    export_valid_region(
+        valid_mask,
+        args.out_valid_region,
+        args.out_valid_region_png,
+        fits_path,
+    )
+
     xy_all, flux_all = detect_stars(data, max_stars=0)
     if len(xy_all) == 0:
         raise RuntimeError(f"No stars detected: {fits_path}")
