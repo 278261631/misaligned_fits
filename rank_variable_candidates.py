@@ -118,6 +118,12 @@ def parse_args():
         default=0,
         help="Top K reference-only missing stars to mark on plots (<=0 means show all).",
     )
+    parser.add_argument(
+        "--top-k-nonref-inner-border-csv",
+        type=int,
+        default=400,
+        help="Top K rows to write into nonref inner-border CSV (<=0 means no limit).",
+    )
     return parser.parse_args()
 
 
@@ -882,10 +888,13 @@ def main():
                     "frames",
                 ]
             )
+            max_inner_csv = int(args.top_k_nonref_inner_border_csv)
             rank_inner = 1
             for i in nonref_order:
                 if not nonref_inside[i]:
                     continue
+                if max_inner_csv > 0 and rank_inner > max_inner_csv:
+                    break
                 frame_names = ";".join(sorted(nonref_frame_sets[i]))
                 writer.writerow(
                     [
