@@ -159,6 +159,42 @@ def robust_mad(x):
     return 1.4826 * np.nanmedian(np.abs(x - med))
 
 
+def detect_knee_keep_count_desc(values_desc, min_count=8):
+    arr = np.asarray(values_desc, dtype=np.float64)
+    arr = arr[np.isfinite(arr)]
+    n = len(arr)
+    if n == 0:
+        return 0
+    if n < int(min_count):
+        return n
+    x = np.arange(n, dtype=np.float64)
+
+    def sse_line(xv, yv):
+        if len(xv) <= 1:
+            return 0.0
+        p = np.polyfit(xv, yv, 1)
+        pred = p[0] * xv + p[1]
+        res = yv - pred
+        return float(np.dot(res, res))
+
+    best_k = 0
+    best_sse = float("inf")
+    # Split into [0..k] and [k..n-1], both segments need >=2 points.
+    for k in range(1, n - 1):
+        x1 = x[: k + 1]
+        y1 = arr[: k + 1]
+        x2 = x[k:]
+        y2 = arr[k:]
+        if len(x1) < 2 or len(x2) < 2:
+            continue
+        sse = sse_line(x1, y1) + sse_line(x2, y2)
+        if sse < best_sse:
+            best_sse = sse
+            best_k = k
+    keep_n = best_k + 1
+    return max(1, min(keep_n, n))
+
+
 def infer_frame_size_from_xy(xy):
     if len(xy) == 0:
         return 1, 1
@@ -922,12 +958,17 @@ def main():
                 ]
             )
             max_inner_csv = int(args.top_k_nonref_inner_border_csv)
+            nonref_order_inside = nonref_order[nonref_inside[nonref_order]]
+            knee_keep_n = detect_knee_keep_count_desc(nonref_median_flux[nonref_order_inside], min_count=8)
+            keep_by_knee = np.zeros(nonref_count, dtype=bool)
+            if knee_keep_n > 0:
+                keep_by_knee[nonref_order_inside[:knee_keep_n]] = True
             rank_inner = 1
             for i in nonref_order:
                 if not nonref_inside[i]:
                     continue
-                if max_inner_csv > 0 and rank_inner > max_inner_csv:
-                    break
+                if not keep_by_knee[i]:
+                    continue
                 frame_names = ";".join(sorted(nonref_frame_sets[i]))
                 if do_nonref_ref_check:
                     nearest_ref_dist = float(ref_tree.query(nonref_xy_arr[i], k=1)[0])
@@ -935,6 +976,11 @@ def main():
                 else:
                     nearest_ref_dist = float("nan")
                     has_ref_nearby = False
+                # Keep only nonref points that are not near any reference star.
+                if has_ref_nearby:
+                    continue
+                if max_inner_csv > 0 and rank_inner > max_inner_csv:
+                    break
                 writer.writerow(
                     [
                         rank_inner,
@@ -952,7 +998,6 @@ def main():
                 rank_inner += 1
 
         top_k_nonref = int(args.top_k_nonref)
-        nonref_order_inside = nonref_order[nonref_inside[nonref_order]]
         nonref_plot_xy_inner_all = nonref_xy_arr[nonref_order_inside]
         if do_nonref_ref_check:
             nearest_dist_all = ref_tree.query(nonref_xy_arr, k=1)[0]
