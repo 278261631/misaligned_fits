@@ -51,6 +51,12 @@ python "D:\github\misaligned_fits\rank_variable_candidates.py" ^
 
     // --out-png "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_/variable_candidates_rank.png" ^
 
+python "D:/github/misaligned_fits/crossmatch_nonref_candidates.py" ^
+    --input-csv "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_/variable_candidates_nonref_only_inner_border.csv" ^
+    --find-hip-csv "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_/find_hip.csv" ^
+    --find-variable-csv "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_/find_variable.csv" ^
+    --find-mpc-csv "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_/find_mpc.csv"
+
 
 
 

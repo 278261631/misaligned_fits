@@ -6,6 +6,7 @@ import json
 import matplotlib.pyplot as plt
 import numpy as np
 from astropy.io import fits
+from astropy.time import Time
 from astropy.wcs import WCS
 from astropy.wcs.utils import proj_plane_pixel_scales
 from matplotlib.path import Path as MplPath
@@ -432,6 +433,60 @@ def resolve_reference_celestial_wcs(base: Path, ref_path: Path | None, ref_stars
     return None, None
 
 
+def resolve_reference_mjd(base: Path, ref_path: Path | None, ref_stars_all_path: Path | None, preferred_path: Path | None = None):
+    candidates = []
+    if preferred_path is not None:
+        candidates.append(preferred_path)
+    if ref_path is not None:
+        candidates.append(ref_path)
+    if ref_stars_all_path is not None and ref_stars_all_path.exists():
+        try:
+            dat = np.load(ref_stars_all_path, allow_pickle=True)
+            for k in ("source_fits", "reference_fits", "projected_fits"):
+                if k not in dat:
+                    continue
+                text = _meta_scalar_to_text(dat[k])
+                if text is None:
+                    continue
+                p = Path(text)
+                if not p.is_absolute():
+                    p = resolve_path(base, p)
+                candidates.append(p)
+        except Exception:
+            pass
+    seen = set()
+    mjd_keys = ("MJD-OBS", "MJD_OBS", "MJD", "MJD-AVG", "MJDAVG", "MJDSTART", "MJDEND")
+    for p in candidates:
+        if p is None:
+            continue
+        try:
+            key = str(p.resolve())
+        except Exception:
+            key = str(p)
+        if key in seen:
+            continue
+        seen.add(key)
+        if not p.exists():
+            continue
+        try:
+            hdr = fits.getheader(p)
+        except Exception:
+            continue
+        for k in mjd_keys:
+            if k in hdr:
+                try:
+                    return float(hdr[k]), p
+                except Exception:
+                    pass
+        date_obs = hdr.get("DATE-OBS")
+        if date_obs is not None:
+            try:
+                return float(Time(str(date_obs)).mjd), p
+            except Exception:
+                pass
+    return float("nan"), None
+
+
 def build_matches_from_alignment(xy_a, xy_b, cx, cy, fit_degree, match_radius):
     px, py = eval_poly(xy_a[:, 0], xy_a[:, 1], cx, cy, degree=fit_degree)
     pred = np.column_stack([px, py])
@@ -749,6 +804,11 @@ def main():
         print("WARNING: Reference WCS not available, RA/DEC columns will be empty in nonref inner-border CSV.")
     else:
         print(f"RA/DEC WCS source: {ref_wcs_source}")
+    ref_mjd, ref_mjd_source = resolve_reference_mjd(base, ref_path, ref_stars_all_path, preferred_path=ref_wcs_source)
+    if np.isfinite(ref_mjd):
+        print(f"MJD source: {ref_mjd_source}, value={ref_mjd:.8f}")
+    else:
+        print("WARNING: Reference MJD not available, MJD column will be empty in nonref inner-border CSV.")
     arcsec_per_px_x = float("nan")
     arcsec_per_px_y = float("nan")
     arcsec_per_px_mean = float("nan")
@@ -1041,6 +1101,7 @@ def main():
                     "arcsec_per_px_x",
                     "arcsec_per_px_y",
                     "arcsec_per_px_mean",
+                    "mjd",
                 ]
             )
             max_inner_csv = int(args.top_k_nonref_inner_border_csv)
@@ -1094,6 +1155,7 @@ def main():
                         f"{arcsec_per_px_x:.8f}" if np.isfinite(arcsec_per_px_x) else "",
                         f"{arcsec_per_px_y:.8f}" if np.isfinite(arcsec_per_px_y) else "",
                         f"{arcsec_per_px_mean:.8f}" if np.isfinite(arcsec_per_px_mean) else "",
+                        f"{ref_mjd:.8f}" if np.isfinite(ref_mjd) else "",
                     ]
                 )
                 rank_inner += 1
@@ -1148,6 +1210,7 @@ def main():
                     "arcsec_per_px_x",
                     "arcsec_per_px_y",
                     "arcsec_per_px_mean",
+                    "mjd",
                 ]
             )
 
