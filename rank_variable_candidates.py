@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from astropy.io import fits
 from astropy.wcs import WCS
+from astropy.wcs.utils import proj_plane_pixel_scales
 from matplotlib.path import Path as MplPath
 from astropy.visualization import ImageNormalize, PercentileInterval, SqrtStretch
 from scipy.spatial import cKDTree
@@ -748,6 +749,23 @@ def main():
         print("WARNING: Reference WCS not available, RA/DEC columns will be empty in nonref inner-border CSV.")
     else:
         print(f"RA/DEC WCS source: {ref_wcs_source}")
+    arcsec_per_px_x = float("nan")
+    arcsec_per_px_y = float("nan")
+    arcsec_per_px_mean = float("nan")
+    if ref_wcs is not None:
+        try:
+            # proj_plane_pixel_scales() returns degrees/pixel for each pixel axis.
+            px_scales_deg = np.asarray(proj_plane_pixel_scales(ref_wcs), dtype=np.float64)
+            if px_scales_deg.size >= 2:
+                arcsec_per_px_x = float(px_scales_deg[0] * 3600.0)
+                arcsec_per_px_y = float(px_scales_deg[1] * 3600.0)
+                arcsec_per_px_mean = 0.5 * (arcsec_per_px_x + arcsec_per_px_y)
+                print(
+                    "Global plate scale arcsec/px: "
+                    f"x={arcsec_per_px_x:.6f}, y={arcsec_per_px_y:.6f}, mean={arcsec_per_px_mean:.6f}"
+                )
+        except Exception:
+            print("WARNING: Failed to estimate global plate scale from reference WCS.")
 
     n_ref = len(xy_ref)
     # First column uses reference flux as baseline.
@@ -1020,6 +1038,9 @@ def main():
                     "nearest_ref_dist_px",
                     "ra_deg",
                     "dec_deg",
+                    "arcsec_per_px_x",
+                    "arcsec_per_px_y",
+                    "arcsec_per_px_mean",
                 ]
             )
             max_inner_csv = int(args.top_k_nonref_inner_border_csv)
@@ -1070,6 +1091,9 @@ def main():
                         f"{nearest_ref_dist:.6f}" if np.isfinite(nearest_ref_dist) else "",
                         f"{float(ra_deg):.8f}" if np.isfinite(ra_deg) else "",
                         f"{float(dec_deg):.8f}" if np.isfinite(dec_deg) else "",
+                        f"{arcsec_per_px_x:.8f}" if np.isfinite(arcsec_per_px_x) else "",
+                        f"{arcsec_per_px_y:.8f}" if np.isfinite(arcsec_per_px_y) else "",
+                        f"{arcsec_per_px_mean:.8f}" if np.isfinite(arcsec_per_px_mean) else "",
                     ]
                 )
                 rank_inner += 1
@@ -1121,6 +1145,9 @@ def main():
                     "nearest_ref_dist_px",
                     "ra_deg",
                     "dec_deg",
+                    "arcsec_per_px_x",
+                    "arcsec_per_px_y",
+                    "arcsec_per_px_mean",
                 ]
             )
 
