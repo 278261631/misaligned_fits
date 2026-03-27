@@ -55,9 +55,21 @@ def _extract_valid_region_polygons(valid_mask):
     fig = plt.figure()
     try:
         cs = plt.contour(valid_mask.astype(np.uint8), levels=[0.5], origin="lower")
-        segs = cs.allsegs[0] if len(cs.allsegs) > 0 else []
+        raw_segs = cs.allsegs[0] if len(cs.allsegs) > 0 else []
     finally:
         plt.close(fig)
+
+    # Matplotlib versions can return either:
+    # - a list of (N, 2) arrays (multiple segments), or
+    # - a single (N, 2) ndarray (one segment).
+    segs = []
+    if isinstance(raw_segs, np.ndarray) and raw_segs.ndim == 2 and raw_segs.shape[1] == 2:
+        segs = [raw_segs]
+    else:
+        for seg in raw_segs:
+            pts = np.asarray(seg)
+            if pts.ndim == 2 and pts.shape[1] == 2:
+                segs.append(pts)
 
     polygons = []
     for seg in segs:
