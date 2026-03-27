@@ -55,7 +55,8 @@ python "D:/github/misaligned_fits/crossmatch_nonref_candidates.py" ^
     --input-csv "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_/variable_candidates_nonref_only_inner_border.csv" ^
     --find-hip-csv "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_/find_hip.csv" ^
     --find-variable-csv "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_/find_variable.csv" ^
-    --find-mpc-csv "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_/find_mpc.csv"
+    --find-mpc-csv "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_/find_mpc.csv" ^
+    --ref-fits "D:/missalign/gy2_K043-7.fits"
 
 
 
@@ -114,7 +115,8 @@ python "D:/github/misaligned_fits/crossmatch_nonref_candidates.py" ^
     --input-csv "D:/align/GY3_K043-8_UTC20260310_163817_-25C_/variable_candidates_nonref_only_inner_border.csv" ^
     --find-hip-csv "D:/align/GY3_K043-8_UTC20260310_163817_-25C_/find_hip.csv" ^
     --find-variable-csv "D:/align/GY3_K043-8_UTC20260310_163817_-25C_/find_variable.csv" ^
-    --find-mpc-csv "D:/align/GY3_K043-8_UTC20260310_163817_-25C_/find_mpc.csv"
+    --find-mpc-csv "D:/align/GY3_K043-8_UTC20260310_163817_-25C_/find_mpc.csv" ^
+    --ref-fits "D:/align/gy3_K043-8.fits"
 
 
 

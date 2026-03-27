@@ -4,6 +4,8 @@ import csv
 import json
 
 import requests
+from astropy.io import fits
+from astropy.wcs import WCS
 
 
 def parse_args():
@@ -50,6 +52,12 @@ def parse_args():
     parser.add_argument("--var-port", type=int, default=5000, help="Variable server port.")
     parser.add_argument("--mpc-host", default="127.0.0.1", help="MPC server host.")
     parser.add_argument("--mpc-port", type=int, default=5001, help="MPC server port.")
+    parser.add_argument(
+        "--ref-fits",
+        type=Path,
+        default=None,
+        help="Reference FITS used to convert matched RA/DEC back to pixel x/y.",
+    )
     parser.add_argument("--timeout-sec", type=float, default=8.0, help="HTTP timeout in seconds.")
     return parser.parse_args()
 
@@ -81,6 +89,51 @@ def write_rows_csv(path: Path, rows, fieldnames):
             writer.writerow(row)
 
 
+def load_reference_wcs(ref_fits: Path | None, input_csv: Path):
+    if ref_fits is None:
+        return None, None
+    p = ref_fits
+    if not p.is_absolute():
+        p = input_csv.parent / p
+    if not p.exists():
+        return None, None
+    try:
+        return WCS(fits.getheader(p)).celestial, p
+    except Exception:
+        return None, None
+
+
+def extract_item_ra_dec(item):
+    keys = {str(k).lower(): k for k in item.keys()}
+    ra_key = None
+    dec_key = None
+    for k in ("ra_deg", "ra", "raj2000", "raj2000_deg", "raj"):
+        if k in keys:
+            ra_key = keys[k]
+            break
+    for k in ("dec_deg", "dec", "dej2000", "dej2000_deg", "dej"):
+        if k in keys:
+            dec_key = keys[k]
+            break
+    if ra_key is None or dec_key is None:
+        return None, None
+    ra = parse_float(item.get(ra_key))
+    dec = parse_float(item.get(dec_key))
+    if ra is None or dec is None:
+        return None, None
+    return float(ra), float(dec)
+
+
+def world_to_pixel_xy(ref_wcs, ra_deg, dec_deg):
+    if ref_wcs is None or ra_deg is None or dec_deg is None:
+        return None, None
+    try:
+        x, y = ref_wcs.world_to_pixel_values(float(ra_deg), float(dec_deg))
+        return float(x), float(y)
+    except Exception:
+        return None, None
+
+
 def main():
     args = parse_args()
     input_csv = args.input_csv
@@ -90,6 +143,11 @@ def main():
     out_hip = args.find_hip_csv if args.find_hip_csv is not None else input_csv.with_name("find_hip.csv")
     out_var = args.find_variable_csv if args.find_variable_csv is not None else input_csv.with_name("find_variable.csv")
     out_mpc = args.find_mpc_csv if args.find_mpc_csv is not None else input_csv.with_name("find_mpc.csv")
+    ref_wcs, ref_wcs_path = load_reference_wcs(args.ref_fits, input_csv)
+    if ref_wcs is None:
+        print("WARNING: Reference WCS unavailable, match_x/match_y will be empty in find_*.csv.")
+    else:
+        print(f"WCS source: {ref_wcs_path}")
 
     with input_csv.open("r", newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
@@ -144,6 +202,8 @@ def main():
             hip_success = True
             row["hip_count"] = str(hip_count)
             for j, item in enumerate(hip_resp.get("results", []), start=1):
+                item_ra, item_dec = extract_item_ra_dec(item)
+                match_x, match_y = world_to_pixel_xy(ref_wcs, item_ra, item_dec)
                 hip_rows.append(
                     {
                         "candidate_rank": rank,
@@ -154,6 +214,10 @@ def main():
                         "radius_arcsec": f"{radius_arcsec:.6f}",
                         "result_index": j,
                         "hip": item.get("hip"),
+                        "match_ra_deg": f"{item_ra:.8f}" if item_ra is not None else "",
+                        "match_dec_deg": f"{item_dec:.8f}" if item_dec is not None else "",
+                        "match_x": f"{match_x:.4f}" if match_x is not None else "",
+                        "match_y": f"{match_y:.4f}" if match_y is not None else "",
                         "mag": item.get("mag"),
                         "separation_arcsec": item.get("separation_arcsec"),
                         "raw_json": json.dumps(item, ensure_ascii=False),
@@ -177,6 +241,8 @@ def main():
                 var_success = True
                 row["variable_count"] = str(var_count)
                 for j, item in enumerate(var_resp.get("results", []), start=1):
+                    item_ra, item_dec = extract_item_ra_dec(item)
+                    match_x, match_y = world_to_pixel_xy(ref_wcs, item_ra, item_dec)
                     variable_rows.append(
                         {
                             "candidate_rank": rank,
@@ -187,6 +253,10 @@ def main():
                             "radius_arcsec": f"{radius_arcsec:.6f}",
                             "result_index": j,
                             "name": item.get("name"),
+                            "match_ra_deg": f"{item_ra:.8f}" if item_ra is not None else "",
+                            "match_dec_deg": f"{item_dec:.8f}" if item_dec is not None else "",
+                            "match_x": f"{match_x:.4f}" if match_x is not None else "",
+                            "match_y": f"{match_y:.4f}" if match_y is not None else "",
                             "mag_min": item.get("mag_min"),
                             "mag_max": item.get("mag_max"),
                             "period": item.get("period"),
@@ -210,6 +280,8 @@ def main():
                     mpc_count = int(mpc_resp.get("count", 0))
                     row["mpc_count"] = str(mpc_count)
                     for j, item in enumerate(mpc_resp.get("results", []), start=1):
+                        item_ra, item_dec = extract_item_ra_dec(item)
+                        match_x, match_y = world_to_pixel_xy(ref_wcs, item_ra, item_dec)
                         mpc_rows.append(
                             {
                                 "candidate_rank": rank,
@@ -221,6 +293,10 @@ def main():
                                 "radius_arcsec": f"{radius_arcsec:.6f}",
                                 "result_index": j,
                                 "name": item.get("name"),
+                                "match_ra_deg": f"{item_ra:.8f}" if item_ra is not None else "",
+                                "match_dec_deg": f"{item_dec:.8f}" if item_dec is not None else "",
+                                "match_x": f"{match_x:.4f}" if match_x is not None else "",
+                                "match_y": f"{match_y:.4f}" if match_y is not None else "",
                                 "mag": item.get("mag"),
                                 "separation": item.get("separation"),
                                 "raw_json": json.dumps(item, ensure_ascii=False),
@@ -241,6 +317,10 @@ def main():
             "radius_arcsec",
             "result_index",
             "hip",
+            "match_ra_deg",
+            "match_dec_deg",
+            "match_x",
+            "match_y",
             "mag",
             "separation_arcsec",
             "raw_json",
@@ -258,6 +338,10 @@ def main():
             "radius_arcsec",
             "result_index",
             "name",
+            "match_ra_deg",
+            "match_dec_deg",
+            "match_x",
+            "match_y",
             "mag_min",
             "mag_max",
             "period",
@@ -278,6 +362,10 @@ def main():
             "radius_arcsec",
             "result_index",
             "name",
+            "match_ra_deg",
+            "match_dec_deg",
+            "match_x",
+            "match_y",
             "mag",
             "separation",
             "raw_json",
