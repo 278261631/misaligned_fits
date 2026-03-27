@@ -6,6 +6,7 @@ import json
 import matplotlib.pyplot as plt
 import numpy as np
 from astropy.io import fits
+from astropy.wcs import WCS
 from matplotlib.path import Path as MplPath
 from astropy.visualization import ImageNormalize, PercentileInterval, SqrtStretch
 from scipy.spatial import cKDTree
@@ -374,6 +375,62 @@ def load_stars_npz(path: Path, return_meta=False):
     return xy, flux
 
 
+def _meta_scalar_to_text(v):
+    if v is None:
+        return None
+    arr = np.asarray(v)
+    if arr.size == 0:
+        return None
+    s = arr.ravel()[0]
+    if isinstance(s, (bytes, bytearray, np.bytes_)):
+        try:
+            s = s.decode("utf-8")
+        except Exception:
+            s = s.decode(errors="ignore")
+    text = str(s).strip()
+    return text if len(text) > 0 else None
+
+
+def resolve_reference_celestial_wcs(base: Path, ref_path: Path | None, ref_stars_all_path: Path | None):
+    candidates = []
+    if ref_path is not None:
+        candidates.append(ref_path)
+    if ref_stars_all_path is not None and ref_stars_all_path.exists():
+        try:
+            dat = np.load(ref_stars_all_path, allow_pickle=True)
+            for k in ("source_fits", "reference_fits", "projected_fits"):
+                if k not in dat:
+                    continue
+                text = _meta_scalar_to_text(dat[k])
+                if text is None:
+                    continue
+                p = Path(text)
+                if not p.is_absolute():
+                    p = resolve_path(base, p)
+                candidates.append(p)
+        except Exception:
+            pass
+    seen = set()
+    for p in candidates:
+        if p is None:
+            continue
+        try:
+            key = str(p.resolve())
+        except Exception:
+            key = str(p)
+        if key in seen:
+            continue
+        seen.add(key)
+        if not p.exists():
+            continue
+        try:
+            wcs = WCS(fits.getheader(p)).celestial
+            return wcs, p
+        except Exception:
+            continue
+    return None, None
+
+
 def build_matches_from_alignment(xy_a, xy_b, cx, cy, fit_degree, match_radius):
     px, py = eval_poly(xy_a[:, 0], xy_a[:, 1], cx, cy, degree=fit_degree)
     pred = np.column_stack([px, py])
@@ -590,6 +647,7 @@ def save_candidate_overlay_exact(
 def main():
     args = parse_args()
     base = args.base if args.base is not None else Path(".")
+    ref_stars_all_path = resolve_path(base, args.ref_stars_all) if args.ref_stars_all is not None else None
     npz_mode = (
         args.ref_stars_all is not None
         or (args.target_stars_all is not None and len(args.target_stars_all) > 0)
@@ -662,10 +720,9 @@ def main():
             raise RuntimeError(
                 "In NPZ mode, --target-stars-all and --target-align must have the same number of entries."
             )
-        ref_stars_all = resolve_path(base, args.ref_stars_all)
-        xy_ref, flux_ref, ref_meta = load_stars_npz(ref_stars_all, return_meta=True)
+        xy_ref, flux_ref, ref_meta = load_stars_npz(ref_stars_all_path, return_meta=True)
         if len(xy_ref) == 0:
-            raise RuntimeError(f"No stars in reference stars NPZ: {ref_stars_all}")
+            raise RuntimeError(f"No stars in reference stars NPZ: {ref_stars_all_path}")
         if ref_data is None:
             if "height" in ref_meta and "width" in ref_meta:
                 h = int(np.asarray(ref_meta["height"]).ravel()[0])
@@ -686,10 +743,16 @@ def main():
         if ref_data is None:
             ref_data = np.full(ref_detect_data.shape, 0.5, dtype=np.float32)
 
+    ref_wcs, ref_wcs_source = resolve_reference_celestial_wcs(base, ref_path, ref_stars_all_path)
+    if ref_wcs is None:
+        print("WARNING: Reference WCS not available, RA/DEC columns will be empty in nonref inner-border CSV.")
+    else:
+        print(f"RA/DEC WCS source: {ref_wcs_source}")
+
     n_ref = len(xy_ref)
     # First column uses reference flux as baseline.
     measurements = [np.asarray(flux_ref, dtype=np.float64)]
-    used_files = [ref_path if ref_path is not None else resolve_path(base, args.ref_stars_all)]
+    used_files = [ref_path if ref_path is not None else ref_stars_all_path]
     matched_counts = []
     failed_files = []
     h_ref, w_ref = ref_data.shape
@@ -955,6 +1018,8 @@ def main():
                     "has_ref_nearby",
                     "is_nonref_unique_vs_ref_all",
                     "nearest_ref_dist_px",
+                    "ra_deg",
+                    "dec_deg",
                 ]
             )
             max_inner_csv = int(args.top_k_nonref_inner_border_csv)
@@ -981,6 +1046,16 @@ def main():
                     continue
                 if max_inner_csv > 0 and rank_inner > max_inner_csv:
                     break
+                if ref_wcs is not None:
+                    try:
+                        ra_deg, dec_deg = ref_wcs.pixel_to_world_values(
+                            float(nonref_xy_arr[i, 0]),
+                            float(nonref_xy_arr[i, 1]),
+                        )
+                    except Exception:
+                        ra_deg, dec_deg = float("nan"), float("nan")
+                else:
+                    ra_deg, dec_deg = float("nan"), float("nan")
                 writer.writerow(
                     [
                         rank_inner,
@@ -993,6 +1068,8 @@ def main():
                         int(has_ref_nearby),
                         int(not has_ref_nearby),
                         f"{nearest_ref_dist:.6f}" if np.isfinite(nearest_ref_dist) else "",
+                        f"{float(ra_deg):.8f}" if np.isfinite(ra_deg) else "",
+                        f"{float(dec_deg):.8f}" if np.isfinite(dec_deg) else "",
                     ]
                 )
                 rank_inner += 1
@@ -1039,6 +1116,11 @@ def main():
                     "n_detections",
                     "median_flux_norm",
                     "frames",
+                    "has_ref_nearby",
+                    "is_nonref_unique_vs_ref_all",
+                    "nearest_ref_dist_px",
+                    "ra_deg",
+                    "dec_deg",
                 ]
             )
 
