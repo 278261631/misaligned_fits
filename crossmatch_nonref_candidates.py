@@ -3,8 +3,11 @@ import argparse
 import csv
 import json
 
+import matplotlib.pyplot as plt
+import numpy as np
 import requests
 from astropy.io import fits
+from astropy.visualization import ImageNormalize, PercentileInterval, SqrtStretch
 from astropy.wcs import WCS
 
 
@@ -103,6 +106,17 @@ def load_reference_wcs(ref_fits: Path | None, input_csv: Path):
         return None, None
 
 
+def resolve_ref_fits_path(ref_fits: Path | None, input_csv: Path):
+    if ref_fits is None:
+        return None
+    p = ref_fits
+    if not p.is_absolute():
+        p = input_csv.parent / p
+    if not p.exists():
+        return None
+    return p
+
+
 def extract_item_ra_dec(item):
     keys = {str(k).lower(): k for k in item.keys()}
     ra_key = None
@@ -134,6 +148,91 @@ def world_to_pixel_xy(ref_wcs, ra_deg, dec_deg):
         return None, None
 
 
+def rows_to_xy(rows, x_key, y_key):
+    xs = []
+    ys = []
+    for row in rows:
+        x = parse_float(row.get(x_key))
+        y = parse_float(row.get(y_key))
+        if x is None or y is None:
+            continue
+        xs.append(float(x))
+        ys.append(float(y))
+    if len(xs) == 0:
+        return np.empty((0, 2), dtype=np.float64)
+    return np.column_stack([np.asarray(xs, dtype=np.float64), np.asarray(ys, dtype=np.float64)])
+
+
+def save_match_overlay_png(ref_img, candidate_xy, hip_xy, var_xy, mpc_xy, out_png: Path):
+    finite = np.isfinite(ref_img)
+    fill = np.nanmedian(ref_img[finite]) if np.any(finite) else 0.0
+    view = np.where(finite, ref_img, fill)
+    h, w = view.shape
+    dpi = 100
+
+    fig = plt.figure(figsize=(w / dpi, h / dpi), dpi=dpi, frameon=False)
+    ax = fig.add_axes([0.0, 0.0, 1.0, 1.0])
+    norm = ImageNormalize(view, interval=PercentileInterval(99.5), stretch=SqrtStretch())
+    ax.imshow(view, origin="lower", cmap="gray", norm=norm, interpolation="nearest")
+
+    if len(candidate_xy) > 0:
+        ax.scatter(
+            candidate_xy[:, 0],
+            candidate_xy[:, 1],
+            marker="o",
+            s=62,
+            facecolors="none",
+            edgecolors="#FFD400",
+            linewidths=1.0,
+            alpha=0.95,
+            label="Candidates (inner-border CSV)",
+        )
+    if len(hip_xy) > 0:
+        ax.scatter(
+            hip_xy[:, 0],
+            hip_xy[:, 1],
+            marker="x",
+            s=34,
+            c="#00E5FF",
+            linewidths=1.0,
+            alpha=0.95,
+            label="HIP matches (match_x/y)",
+        )
+    if len(var_xy) > 0:
+        ax.scatter(
+            var_xy[:, 0],
+            var_xy[:, 1],
+            marker="+",
+            s=36,
+            c="#57FF57",
+            linewidths=1.0,
+            alpha=0.95,
+            label="Variable matches (match_x/y)",
+        )
+    if len(mpc_xy) > 0:
+        ax.scatter(
+            mpc_xy[:, 0],
+            mpc_xy[:, 1],
+            marker="^",
+            s=28,
+            c="#FF3EA5",
+            alpha=0.9,
+            linewidths=0.5,
+            edgecolors="white",
+            label="MPC matches (match_x/y)",
+        )
+
+    if len(candidate_xy) > 0 or len(hip_xy) > 0 or len(var_xy) > 0 or len(mpc_xy) > 0:
+        ax.legend(loc="upper right", framealpha=0.65, fontsize=6)
+
+    ax.set_xlim(-0.5, w - 0.5)
+    ax.set_ylim(h - 0.5, -0.5)
+    ax.set_axis_off()
+    out_png.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_png, dpi=dpi, bbox_inches=None, pad_inches=0)
+    plt.close(fig)
+
+
 def main():
     args = parse_args()
     input_csv = args.input_csv
@@ -143,6 +242,8 @@ def main():
     out_hip = args.find_hip_csv if args.find_hip_csv is not None else input_csv.with_name("find_hip.csv")
     out_var = args.find_variable_csv if args.find_variable_csv is not None else input_csv.with_name("find_variable.csv")
     out_mpc = args.find_mpc_csv if args.find_mpc_csv is not None else input_csv.with_name("find_mpc.csv")
+    out_match_png = input_csv.with_name("variable_candidates_rank_aligned_to_a_match.png")
+    ref_fits_path = resolve_ref_fits_path(args.ref_fits, input_csv)
     ref_wcs, ref_wcs_path = load_reference_wcs(args.ref_fits, input_csv)
     if ref_wcs is None:
         print("WARNING: Reference WCS unavailable, match_x/match_y will be empty in find_*.csv.")
@@ -377,6 +478,20 @@ def main():
         writer.writeheader()
         for row in rows:
             writer.writerow(row)
+
+    if ref_fits_path is None:
+        print("WARNING: Reference FITS unavailable, skip variable_candidates_rank_aligned_to_a_match.png.")
+    else:
+        try:
+            ref_data = fits.getdata(ref_fits_path).astype(float)
+            candidate_xy = rows_to_xy(rows, "x", "y")
+            hip_xy = rows_to_xy(hip_rows, "match_x", "match_y")
+            var_xy = rows_to_xy(variable_rows, "match_x", "match_y")
+            mpc_xy = rows_to_xy(mpc_rows, "match_x", "match_y")
+            save_match_overlay_png(ref_data, candidate_xy, hip_xy, var_xy, mpc_xy, out_match_png)
+            print(f"WROTE {out_match_png}")
+        except Exception as exc:
+            print(f"WARNING: Failed to write {out_match_png}: {exc}")
 
     print(f"WROTE {input_csv}")
     print(f"WROTE {out_hip}")
