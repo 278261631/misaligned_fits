@@ -48,6 +48,12 @@ def parse_args():
         help="Output CSV for non-reference-only stars inside ref-target overlap border only.",
     )
     parser.add_argument(
+        "--out-csv-nonref-inner-border-pre-knee",
+        type=Path,
+        default=None,
+        help="Output CSV for nonref inner-border stars before knee/top-k truncation (still excludes ref-nearby points).",
+    )
+    parser.add_argument(
         "--out-overlap-expr",
         type=Path,
         default=None,
@@ -738,6 +744,14 @@ def main():
         if args.out_csv_nonref_inner_border is not None
         else (base / "variable_candidates_nonref_only_inner_border.csv")
     )
+    out_csv_nonref_inner_border_pre_knee = (
+        args.out_csv_nonref_inner_border_pre_knee
+        if args.out_csv_nonref_inner_border_pre_knee is not None
+        else (
+            out_csv_nonref_inner_border.parent
+            / "variable_candidates_nonref_only_inner_border_pre_knee.csv"
+        )
+    )
     out_overlap_expr = (
         args.out_overlap_expr if args.out_overlap_expr is not None else (base / "ref_target_overlap_polygon_expr.json")
     )
@@ -748,6 +762,7 @@ def main():
     out_csv_nonref.parent.mkdir(parents=True, exist_ok=True)
     out_csv_ref_missing.parent.mkdir(parents=True, exist_ok=True)
     out_csv_nonref_inner_border.parent.mkdir(parents=True, exist_ok=True)
+    out_csv_nonref_inner_border_pre_knee.parent.mkdir(parents=True, exist_ok=True)
     out_overlap_expr.parent.mkdir(parents=True, exist_ok=True)
     if out_overlap_expr_png is not None:
         out_overlap_expr_png.parent.mkdir(parents=True, exist_ok=True)
@@ -1082,28 +1097,77 @@ def main():
                     ]
                 )
 
+        nonref_inner_border_header = [
+            "rank",
+            "x",
+            "y",
+            "n_frames_detected",
+            "n_detections",
+            "median_flux_norm",
+            "frames",
+            "has_ref_nearby",
+            "is_nonref_unique_vs_ref_all",
+            "nearest_ref_dist_px",
+            "ra_deg",
+            "dec_deg",
+            "arcsec_per_px_x",
+            "arcsec_per_px_y",
+            "arcsec_per_px_mean",
+            "mjd",
+        ]
+
+        with out_csv_nonref_inner_border_pre_knee.open("w", newline="", encoding="utf-8") as f_pre:
+            writer_pre = csv.writer(f_pre)
+            writer_pre.writerow(nonref_inner_border_header)
+            rank_pre = 1
+            for i in nonref_order:
+                if not nonref_inside[i]:
+                    continue
+                frame_names = ";".join(sorted(nonref_frame_sets[i]))
+                if do_nonref_ref_check:
+                    nearest_ref_dist = float(ref_tree.query(nonref_xy_arr[i], k=1)[0])
+                    has_ref_nearby = nearest_ref_dist <= nonref_ref_check_radius
+                else:
+                    nearest_ref_dist = float("nan")
+                    has_ref_nearby = False
+                # Pre-knee CSV still excludes points near reference stars (definition A).
+                if has_ref_nearby:
+                    continue
+                if ref_wcs is not None:
+                    try:
+                        ra_deg, dec_deg = ref_wcs.pixel_to_world_values(
+                            float(nonref_xy_arr[i, 0]),
+                            float(nonref_xy_arr[i, 1]),
+                        )
+                    except Exception:
+                        ra_deg, dec_deg = float("nan"), float("nan")
+                else:
+                    ra_deg, dec_deg = float("nan"), float("nan")
+                writer_pre.writerow(
+                    [
+                        rank_pre,
+                        f"{nonref_xy_arr[i, 0]:.4f}",
+                        f"{nonref_xy_arr[i, 1]:.4f}",
+                        int(nonref_n_frames[i]),
+                        int(nonref_n_det[i]),
+                        f"{nonref_median_flux[i]:.8f}",
+                        frame_names,
+                        int(has_ref_nearby),
+                        int(not has_ref_nearby),
+                        f"{nearest_ref_dist:.6f}" if np.isfinite(nearest_ref_dist) else "",
+                        f"{float(ra_deg):.8f}" if np.isfinite(ra_deg) else "",
+                        f"{float(dec_deg):.8f}" if np.isfinite(dec_deg) else "",
+                        f"{arcsec_per_px_x:.8f}" if np.isfinite(arcsec_per_px_x) else "",
+                        f"{arcsec_per_px_y:.8f}" if np.isfinite(arcsec_per_px_y) else "",
+                        f"{arcsec_per_px_mean:.8f}" if np.isfinite(arcsec_per_px_mean) else "",
+                        f"{ref_mjd:.8f}" if np.isfinite(ref_mjd) else "",
+                    ]
+                )
+                rank_pre += 1
+
         with out_csv_nonref_inner_border.open("w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
-            writer.writerow(
-                [
-                    "rank",
-                    "x",
-                    "y",
-                    "n_frames_detected",
-                    "n_detections",
-                    "median_flux_norm",
-                    "frames",
-                    "has_ref_nearby",
-                    "is_nonref_unique_vs_ref_all",
-                    "nearest_ref_dist_px",
-                    "ra_deg",
-                    "dec_deg",
-                    "arcsec_per_px_x",
-                    "arcsec_per_px_y",
-                    "arcsec_per_px_mean",
-                    "mjd",
-                ]
-            )
+            writer.writerow(nonref_inner_border_header)
             max_inner_csv = int(args.top_k_nonref_inner_border_csv)
             nonref_order_inside = nonref_order[nonref_inside[nonref_order]]
             knee_keep_n = detect_knee_keep_count_desc(nonref_median_flux[nonref_order_inside], min_count=8)
@@ -1192,6 +1256,28 @@ def main():
                 ]
             )
         with out_csv_nonref_inner_border.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(
+                [
+                    "rank",
+                    "x",
+                    "y",
+                    "n_frames_detected",
+                    "n_detections",
+                    "median_flux_norm",
+                    "frames",
+                    "has_ref_nearby",
+                    "is_nonref_unique_vs_ref_all",
+                    "nearest_ref_dist_px",
+                    "ra_deg",
+                    "dec_deg",
+                    "arcsec_per_px_x",
+                    "arcsec_per_px_y",
+                    "arcsec_per_px_mean",
+                    "mjd",
+                ]
+            )
+        with out_csv_nonref_inner_border_pre_knee.open("w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             writer.writerow(
                 [
@@ -1331,6 +1417,7 @@ def main():
     print(f"WROTE {out_csv}")
     print(f"WROTE {out_csv_nonref}")
     print(f"WROTE {out_csv_nonref_inner_border}")
+    print(f"WROTE {out_csv_nonref_inner_border_pre_knee}")
     print(f"WROTE {out_csv_ref_missing}")
     print(f"WROTE {out_overlap_expr}")
     if out_overlap_expr_png is not None:
