@@ -12,7 +12,12 @@ from scipy.spatial import cKDTree
 def detect_stars(image, max_stars=5000):
     hp = image - gaussian_filter(image, sigma=8.0)
     _, med, std = sigma_clipped_stats(hp, sigma=3.0, maxiters=10)
-    finder = DAOStarFinder(fwhm=3.0, threshold=max(5.0 * std, 1e-6))
+    finder = DAOStarFinder(
+        fwhm=3.0,
+        threshold=max(5.0 * std, 1e-6),
+        brightest=None,
+        peakmax=None,
+    )
     src = finder(hp - med)
     if src is None or len(src) == 0:
         return np.empty((0, 2), dtype=float), np.empty((0,), dtype=float)
