@@ -1115,21 +1115,51 @@ def main():
             "arcsec_per_px_mean",
             "mjd",
         ]
+        nonref_inner_border_pre_knee_header = nonref_inner_border_header + [
+            "kept_in_inner_border_csv",
+            "drop_reason_after_pre_knee",
+        ]
+        max_inner_csv = int(args.top_k_nonref_inner_border_csv)
+        nonref_order_inside = nonref_order[nonref_inside[nonref_order]]
+        knee_keep_n = detect_knee_keep_count_desc(nonref_median_flux[nonref_order_inside], min_count=8)
+        keep_by_knee = np.zeros(nonref_count, dtype=bool)
+        if knee_keep_n > 0:
+            keep_by_knee[nonref_order_inside[:knee_keep_n]] = True
+        if do_nonref_ref_check:
+            nearest_dist_all = np.asarray(ref_tree.query(nonref_xy_arr, k=1)[0], dtype=np.float64)
+            has_ref_nearby_all = np.asarray(nearest_dist_all <= nonref_ref_check_radius, dtype=bool)
+        else:
+            nearest_dist_all = np.full(nonref_count, np.nan, dtype=np.float64)
+            has_ref_nearby_all = np.zeros(nonref_count, dtype=bool)
+        kept_in_inner_border_csv = np.zeros(nonref_count, dtype=bool)
+        drop_reason_after_pre_knee = np.full(nonref_count, "", dtype=object)
+        final_rank_by_idx = np.zeros(nonref_count, dtype=np.int32)
+        rank_inner = 1
+        for i in nonref_order:
+            if not nonref_inside[i]:
+                continue
+            if has_ref_nearby_all[i]:
+                continue
+            if not keep_by_knee[i]:
+                drop_reason_after_pre_knee[i] = "below_knee_cut"
+                continue
+            if max_inner_csv > 0 and rank_inner > max_inner_csv:
+                drop_reason_after_pre_knee[i] = "exceeds_top_k_nonref_inner_border_csv"
+                continue
+            kept_in_inner_border_csv[i] = True
+            final_rank_by_idx[i] = rank_inner
+            rank_inner += 1
 
         with out_csv_nonref_inner_border_pre_knee.open("w", newline="", encoding="utf-8") as f_pre:
             writer_pre = csv.writer(f_pre)
-            writer_pre.writerow(nonref_inner_border_header)
+            writer_pre.writerow(nonref_inner_border_pre_knee_header)
             rank_pre = 1
             for i in nonref_order:
                 if not nonref_inside[i]:
                     continue
                 frame_names = ";".join(sorted(nonref_frame_sets[i]))
-                if do_nonref_ref_check:
-                    nearest_ref_dist = float(ref_tree.query(nonref_xy_arr[i], k=1)[0])
-                    has_ref_nearby = nearest_ref_dist <= nonref_ref_check_radius
-                else:
-                    nearest_ref_dist = float("nan")
-                    has_ref_nearby = False
+                nearest_ref_dist = float(nearest_dist_all[i])
+                has_ref_nearby = bool(has_ref_nearby_all[i])
                 # Pre-knee CSV still excludes points near reference stars (definition A).
                 if has_ref_nearby:
                     continue
@@ -1161,6 +1191,8 @@ def main():
                         f"{arcsec_per_px_y:.8f}" if np.isfinite(arcsec_per_px_y) else "",
                         f"{arcsec_per_px_mean:.8f}" if np.isfinite(arcsec_per_px_mean) else "",
                         f"{ref_mjd:.8f}" if np.isfinite(ref_mjd) else "",
+                        int(kept_in_inner_border_csv[i]),
+                        str(drop_reason_after_pre_knee[i]),
                     ]
                 )
                 rank_pre += 1
@@ -1168,30 +1200,12 @@ def main():
         with out_csv_nonref_inner_border.open("w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             writer.writerow(nonref_inner_border_header)
-            max_inner_csv = int(args.top_k_nonref_inner_border_csv)
-            nonref_order_inside = nonref_order[nonref_inside[nonref_order]]
-            knee_keep_n = detect_knee_keep_count_desc(nonref_median_flux[nonref_order_inside], min_count=8)
-            keep_by_knee = np.zeros(nonref_count, dtype=bool)
-            if knee_keep_n > 0:
-                keep_by_knee[nonref_order_inside[:knee_keep_n]] = True
-            rank_inner = 1
             for i in nonref_order:
-                if not nonref_inside[i]:
-                    continue
-                if not keep_by_knee[i]:
+                if not kept_in_inner_border_csv[i]:
                     continue
                 frame_names = ";".join(sorted(nonref_frame_sets[i]))
-                if do_nonref_ref_check:
-                    nearest_ref_dist = float(ref_tree.query(nonref_xy_arr[i], k=1)[0])
-                    has_ref_nearby = nearest_ref_dist <= nonref_ref_check_radius
-                else:
-                    nearest_ref_dist = float("nan")
-                    has_ref_nearby = False
-                # Keep only nonref points that are not near any reference star.
-                if has_ref_nearby:
-                    continue
-                if max_inner_csv > 0 and rank_inner > max_inner_csv:
-                    break
+                nearest_ref_dist = float(nearest_dist_all[i])
+                has_ref_nearby = bool(has_ref_nearby_all[i])
                 if ref_wcs is not None:
                     try:
                         ra_deg, dec_deg = ref_wcs.pixel_to_world_values(
@@ -1204,7 +1218,7 @@ def main():
                     ra_deg, dec_deg = float("nan"), float("nan")
                 writer.writerow(
                     [
-                        rank_inner,
+                        int(final_rank_by_idx[i]),
                         f"{nonref_xy_arr[i, 0]:.4f}",
                         f"{nonref_xy_arr[i, 1]:.4f}",
                         int(nonref_n_frames[i]),
@@ -1222,15 +1236,9 @@ def main():
                         f"{ref_mjd:.8f}" if np.isfinite(ref_mjd) else "",
                     ]
                 )
-                rank_inner += 1
 
         top_k_nonref = int(args.top_k_nonref)
         nonref_plot_xy_inner_all = nonref_xy_arr[nonref_order_inside]
-        if do_nonref_ref_check:
-            nearest_dist_all = ref_tree.query(nonref_xy_arr, k=1)[0]
-            has_ref_nearby_all = np.asarray(nearest_dist_all <= nonref_ref_check_radius, dtype=bool)
-        else:
-            has_ref_nearby_all = np.zeros(nonref_count, dtype=bool)
         keep_n = len(nonref_order_inside) if top_k_nonref <= 0 else min(top_k_nonref, len(nonref_order_inside))
         nonref_plot_xy = nonref_xy_arr[nonref_order_inside[:keep_n]]
         keep_n_rank = min(400, len(nonref_order_inside))
@@ -1297,6 +1305,8 @@ def main():
                     "arcsec_per_px_y",
                     "arcsec_per_px_mean",
                     "mjd",
+                    "kept_in_inner_border_csv",
+                    "drop_reason_after_pre_knee",
                 ]
             )
 
