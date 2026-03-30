@@ -39,6 +39,24 @@ def parse_args():
         default=None,
         help="Optional PNG path to visualize valid image region polygons. Skip when not provided.",
     )
+    parser.add_argument(
+        "--out-all-png",
+        type=Path,
+        default=None,
+        help="Optional PNG path to visualize full image with stars from .all.npz. Skip when not provided.",
+    )
+    parser.add_argument(
+        "--all-png-stretch",
+        choices=("none", "normal", "strong"),
+        default="strong",
+        help="Contrast stretch mode for --out-all-png (default: strong).",
+    )
+    parser.add_argument(
+        "--all-png-gamma",
+        type=float,
+        default=0.45,
+        help="Gamma used after percentile stretch for --out-all-png (default: 0.45).",
+    )
     return parser.parse_args()
 
 
@@ -131,6 +149,66 @@ def export_valid_region(valid_mask, out_json: Path | None, out_png: Path | None,
         print(f"WROTE {out_png}")
 
 
+def _stretch_image_for_display(image_data, mode: str, gamma: float):
+    finite = np.isfinite(image_data)
+    fill = np.nanmedian(image_data[finite]) if np.any(finite) else 0.0
+    view = np.where(finite, image_data, fill).astype(np.float64, copy=False)
+    if mode == "none":
+        return view
+
+    finite_vals = view[np.isfinite(view)]
+    if finite_vals.size == 0:
+        return view
+
+    if mode == "strong":
+        p_low, p_high = 0.5, 99.8
+    else:
+        p_low, p_high = 1.0, 99.5
+    vmin = float(np.percentile(finite_vals, p_low))
+    vmax = float(np.percentile(finite_vals, p_high))
+    if not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
+        return view
+
+    clipped = np.clip(view, vmin, vmax)
+    norm = (clipped - vmin) / (vmax - vmin)
+    safe_gamma = float(gamma) if float(gamma) > 0 else 1.0
+    return np.power(norm, safe_gamma)
+
+
+def export_all_stars_png(image_data, xy_all, flux_all, out_png: Path | None, stretch_mode: str, stretch_gamma: float):
+    if out_png is None:
+        return
+
+    out_png.parent.mkdir(parents=True, exist_ok=True)
+    fig = plt.figure(figsize=(10, 8))
+    ax = fig.add_subplot(111)
+    view = _stretch_image_for_display(image_data, stretch_mode, stretch_gamma)
+    ax.imshow(view, origin="lower", cmap="gray", interpolation="nearest")
+    flux = np.asarray(flux_all, dtype=np.float64)
+    keep = flux > 99.0
+    xy_draw = xy_all[keep] if len(xy_all) == len(flux) else xy_all
+    if len(xy_draw) > 0:
+        ax.scatter(
+            xy_draw[:, 0],
+            xy_draw[:, 1],
+            s=10,
+            marker="o",
+            facecolors="none",
+            edgecolors="#FFD400",
+            linewidths=0.6,
+            alpha=0.9,
+        )
+    ax.set_title(
+        f"Stars with flux > 99: {len(xy_draw)} / {len(xy_all)} "
+        f"(stretch={stretch_mode}, gamma={float(stretch_gamma):.2f})"
+    )
+    ax.set_axis_off()
+    fig.tight_layout()
+    fig.savefig(out_png, dpi=150)
+    plt.close(fig)
+    print(f"WROTE {out_png}")
+
+
 def main():
     args = parse_args()
     fits_path = args.fits
@@ -181,6 +259,14 @@ def main():
         source_fits=str(fits_path),
         height=int(data.shape[0]),
         width=int(data.shape[1]),
+    )
+    export_all_stars_png(
+        data,
+        xy_all,
+        flux_all,
+        args.out_all_png,
+        args.all_png_stretch,
+        args.all_png_gamma,
     )
     print(f"stars_align={len(xy_align)}")
     print(f"stars_all={len(xy_all)}")

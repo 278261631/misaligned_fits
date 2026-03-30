@@ -6,7 +6,8 @@ python "D:/github/misaligned_fits/export_fits_stars.py" ^
     --out-valid-region "D:/missalign/gy2_K043-7.effective.json" ^
     --out-valid-region-png "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_/gy2_K043-7.effective.png" ^
     --out-all "D:/missalign/gy2_K043-7.stars.all.npz" ^
-    --uniform-grid-x 7 --uniform-grid-y 7 --uniform-per-cell 100
+    --uniform-grid-x 7 --uniform-grid-y 7 --uniform-per-cell 100 ^
+    --out-all-png "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_/gy2_K043-7.stars.all.png"
 
 python "D:/github/fits_data_view_process_3d/std_process/recommended_pipeline_console.py" ^
     -i "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_.fit" ^
@@ -77,7 +78,8 @@ python "D:/github/misaligned_fits/export_fits_stars.py" ^
     --out-valid-region "D:/align/gy3_K043-8.effective.json" ^
     --out-valid-region-png "D:/align/GY3_K043-8_UTC20260310_163817_-25C_/gy3_K043-8.effective.png" ^
     --out-all "D:/align/gy3_K043-8.stars.all.npz" ^
-    --uniform-grid-x 7 --uniform-grid-y 7 --uniform-per-cell 100
+    --uniform-grid-x 7 --uniform-grid-y 7 --uniform-per-cell 100 ^
+    --out-all-png "D:/align/GY3_K043-8_UTC20260310_163817_-25C_/gy3_K043-8.stars.all.png"
 
 python "D:/github/fits_data_view_process_3d/std_process/recommended_pipeline_console.py" ^
     -i "D:/align/GY3_K043-8_UTC20260310_163817_-25C_.fit" ^
