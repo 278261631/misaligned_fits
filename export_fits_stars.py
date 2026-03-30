@@ -57,6 +57,12 @@ def parse_args():
         default=0.45,
         help="Gamma used after percentile stretch for --out-all-png (default: 0.45).",
     )
+    parser.add_argument(
+        "--all-png-min-flux-percentile",
+        type=float,
+        default=95.0,
+        help="Only stars above this flux percentile are marked in --out-all-png (default: 95).",
+    )
     return parser.parse_args()
 
 
@@ -175,7 +181,15 @@ def _stretch_image_for_display(image_data, mode: str, gamma: float):
     return np.power(norm, safe_gamma)
 
 
-def export_all_stars_png(image_data, xy_all, flux_all, out_png: Path | None, stretch_mode: str, stretch_gamma: float):
+def export_all_stars_png(
+    image_data,
+    xy_all,
+    flux_all,
+    out_png: Path | None,
+    stretch_mode: str,
+    stretch_gamma: float,
+    min_flux_percentile: float,
+):
     if out_png is None:
         return
 
@@ -185,7 +199,9 @@ def export_all_stars_png(image_data, xy_all, flux_all, out_png: Path | None, str
     view = _stretch_image_for_display(image_data, stretch_mode, stretch_gamma)
     ax.imshow(view, origin="lower", cmap="gray", interpolation="nearest")
     flux = np.asarray(flux_all, dtype=np.float64)
-    keep = flux > 99.0
+    p = float(np.clip(min_flux_percentile, 0.0, 100.0))
+    thr = float(np.percentile(flux, p)) if flux.size > 0 else np.inf
+    keep = flux > thr
     xy_draw = xy_all[keep] if len(xy_all) == len(flux) else xy_all
     if len(xy_draw) > 0:
         ax.scatter(
@@ -199,12 +215,12 @@ def export_all_stars_png(image_data, xy_all, flux_all, out_png: Path | None, str
             alpha=0.9,
         )
     ax.set_title(
-        f"Stars with flux > 99: {len(xy_draw)} / {len(xy_all)} "
+        f"Stars with flux > P{p:g} ({thr:.3g}): {len(xy_draw)} / {len(xy_all)} "
         f"(stretch={stretch_mode}, gamma={float(stretch_gamma):.2f})"
     )
     ax.set_axis_off()
     fig.tight_layout()
-    fig.savefig(out_png, dpi=150)
+    fig.savefig(out_png, dpi=220)
     plt.close(fig)
     print(f"WROTE {out_png}")
 
@@ -267,6 +283,7 @@ def main():
         args.out_all_png,
         args.all_png_stretch,
         args.all_png_gamma,
+        args.all_png_min_flux_percentile,
     )
     print(f"stars_align={len(xy_align)}")
     print(f"stars_all={len(xy_all)}")
