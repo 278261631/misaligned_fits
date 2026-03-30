@@ -9,21 +9,99 @@ from scipy.ndimage import gaussian_filter, map_coordinates
 from scipy.spatial import cKDTree
 
 
-def detect_stars(image, max_stars=5000):
-    hp = image - gaussian_filter(image, sigma=8.0)
-    _, med, std = sigma_clipped_stats(hp, sigma=3.0, maxiters=10)
+def _dao_detect_single(image_for_detection, fwhm=3.0, threshold_sigma=5.0):
+    _, med, std = sigma_clipped_stats(image_for_detection, sigma=3.0, maxiters=10)
+    if not np.isfinite(std) or float(std) <= 0.0:
+        return np.empty((0, 2), dtype=float), np.empty((0,), dtype=float)
+
     finder = DAOStarFinder(
-        fwhm=3.0,
-        threshold=max(5.0 * std, 1e-6),
+        fwhm=float(fwhm),
+        threshold=max(float(threshold_sigma) * float(std), 1e-6),
         brightest=None,
         peakmax=None,
     )
-    src = finder(hp - med)
+    src = finder(image_for_detection - med)
     if src is None or len(src) == 0:
         return np.empty((0, 2), dtype=float), np.empty((0,), dtype=float)
 
     xy = np.column_stack([np.asarray(src["xcentroid"]), np.asarray(src["ycentroid"])])
-    flux = np.asarray(src["flux"])
+    flux = np.asarray(src["flux"], dtype=float)
+    ok = np.isfinite(xy[:, 0]) & np.isfinite(xy[:, 1]) & np.isfinite(flux) & (flux > 0.0)
+    if not np.any(ok):
+        return np.empty((0, 2), dtype=float), np.empty((0,), dtype=float)
+    return xy[ok], flux[ok]
+
+
+def _dedupe_by_radius_keep_brightest(xy, flux, radius_px=2.5):
+    if len(xy) == 0:
+        return xy, flux
+    order = np.argsort(flux)[::-1]
+    xy_sorted = np.asarray(xy[order], dtype=float)
+    flux_sorted = np.asarray(flux[order], dtype=float)
+
+    cell_size = max(float(radius_px), 1e-6)
+    r2 = float(radius_px) * float(radius_px)
+    grid = {}
+    keep_xy = []
+    keep_flux = []
+
+    for pt, f in zip(xy_sorted, flux_sorted):
+        cx = int(np.floor(pt[0] / cell_size))
+        cy = int(np.floor(pt[1] / cell_size))
+        duplicate = False
+        for ny in range(cy - 1, cy + 2):
+            for nx in range(cx - 1, cx + 2):
+                for qx, qy in grid.get((nx, ny), []):
+                    dx = float(pt[0]) - float(qx)
+                    dy = float(pt[1]) - float(qy)
+                    if (dx * dx + dy * dy) <= r2:
+                        duplicate = True
+                        break
+                if duplicate:
+                    break
+            if duplicate:
+                break
+        if duplicate:
+            continue
+        keep_xy.append((float(pt[0]), float(pt[1])))
+        keep_flux.append(float(f))
+        grid.setdefault((cx, cy), []).append((float(pt[0]), float(pt[1])))
+
+    return np.asarray(keep_xy, dtype=float), np.asarray(keep_flux, dtype=float)
+
+
+def detect_stars(image, max_stars=5000):
+    arr = np.asarray(image, dtype=float)
+    finite = np.isfinite(arr)
+    fill = float(np.nanmedian(arr[finite])) if np.any(finite) else 0.0
+    base = np.where(finite, arr, fill)
+    hp = base - gaussian_filter(base, sigma=6.0)
+    smooth = gaussian_filter(base, sigma=1.2)
+
+    # Multi-scale detection: keep legacy high-pass pass and add bright-star-friendly passes.
+    passes = [
+        (hp, 3.0, 4.0),
+        (smooth, 4.5, 3.8),
+        (base, 6.0, 3.5),
+    ]
+    xy_chunks = []
+    flux_chunks = []
+    for detect_img, fwhm, thr_sigma in passes:
+        xy_i, flux_i = _dao_detect_single(detect_img, fwhm=fwhm, threshold_sigma=thr_sigma)
+        if len(xy_i) == 0:
+            continue
+        xy_chunks.append(xy_i)
+        flux_chunks.append(flux_i)
+
+    if len(xy_chunks) == 0:
+        return np.empty((0, 2), dtype=float), np.empty((0,), dtype=float)
+
+    xy = np.vstack(xy_chunks)
+    flux = np.concatenate(flux_chunks)
+    xy, flux = _dedupe_by_radius_keep_brightest(xy, flux, radius_px=2.5)
+    if len(xy) == 0:
+        return np.empty((0, 2), dtype=float), np.empty((0,), dtype=float)
+
     order = np.argsort(flux)[::-1]
     if max_stars is not None and int(max_stars) > 0:
         order = order[: int(max_stars)]
