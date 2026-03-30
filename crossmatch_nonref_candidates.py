@@ -83,6 +83,20 @@ def request_search(url, params, timeout_sec):
     return r.json()
 
 
+def check_service_health(service_name, host, port, timeout_sec):
+    health_url = f"http://{host}:{port}/health"
+    try:
+        resp = requests.get(health_url, timeout=float(timeout_sec))
+        if resp.status_code == 200:
+            print(f"[health] {service_name}: OK ({health_url})")
+            return True
+        print(f"[health] {service_name}: NOT READY status={resp.status_code} ({health_url})")
+        return False
+    except Exception as exc:
+        print(f"[health] {service_name}: DOWN ({health_url}) - {exc}")
+        return False
+
+
 def write_rows_csv(path: Path, rows, fieldnames):
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as f:
@@ -269,6 +283,16 @@ def main():
     hip_url = f"http://{args.hip_host}:{args.hip_port}/search"
     var_url = f"http://{args.var_host}:{args.var_port}/search"
     mpc_url = f"http://{args.mpc_host}:{args.mpc_port}/search"
+    health_timeout_sec = min(float(args.timeout_sec), 2.0)
+    print(f"Checking service health (timeout={health_timeout_sec:.1f}s)...")
+    hip_available = check_service_health("HIP", args.hip_host, args.hip_port, health_timeout_sec)
+    var_available = check_service_health("Variable", args.var_host, args.var_port, health_timeout_sec)
+    mpc_available = check_service_health("MPC", args.mpc_host, args.mpc_port, health_timeout_sec)
+    print(
+        f"Health summary: hip={'up' if hip_available else 'down'}, "
+        f"variable={'up' if var_available else 'down'}, "
+        f"mpc={'up' if mpc_available else 'down'}"
+    )
 
     for row in rows:
         row["hip_count"] = "-1"
@@ -292,45 +316,46 @@ def main():
         # 1) HIP
         hip_success = False
         hip_count = -1
-        try:
-            n_hip_queried += 1
-            hip_resp = request_search(
-                hip_url,
-                {"ra": ra, "dec": dec, "radius": radius_arcsec, "top": 500},
-                timeout_sec=float(args.timeout_sec),
-            )
-            hip_count = int(hip_resp.get("count", 0))
-            hip_success = True
-            row["hip_count"] = str(hip_count)
-            for j, item in enumerate(hip_resp.get("results", []), start=1):
-                item_ra, item_dec = extract_item_ra_dec(item)
-                match_x, match_y = world_to_pixel_xy(ref_wcs, item_ra, item_dec)
-                hip_rows.append(
-                    {
-                        "candidate_rank": rank,
-                        "candidate_x": x,
-                        "candidate_y": y,
-                        "candidate_ra_deg": f"{ra:.8f}",
-                        "candidate_dec_deg": f"{dec:.8f}",
-                        "radius_arcsec": f"{radius_arcsec:.6f}",
-                        "result_index": j,
-                        "hip": item.get("hip"),
-                        "match_ra_deg": f"{item_ra:.8f}" if item_ra is not None else "",
-                        "match_dec_deg": f"{item_dec:.8f}" if item_dec is not None else "",
-                        "match_x": f"{match_x:.4f}" if match_x is not None else "",
-                        "match_y": f"{match_y:.4f}" if match_y is not None else "",
-                        "mag": item.get("mag"),
-                        "separation_arcsec": item.get("separation_arcsec"),
-                        "raw_json": json.dumps(item, ensure_ascii=False),
-                    }
+        if hip_available:
+            try:
+                n_hip_queried += 1
+                hip_resp = request_search(
+                    hip_url,
+                    {"ra": ra, "dec": dec, "radius": radius_arcsec, "top": 500},
+                    timeout_sec=float(args.timeout_sec),
                 )
-        except Exception:
-            pass
+                hip_count = int(hip_resp.get("count", 0))
+                hip_success = True
+                row["hip_count"] = str(hip_count)
+                for j, item in enumerate(hip_resp.get("results", []), start=1):
+                    item_ra, item_dec = extract_item_ra_dec(item)
+                    match_x, match_y = world_to_pixel_xy(ref_wcs, item_ra, item_dec)
+                    hip_rows.append(
+                        {
+                            "candidate_rank": rank,
+                            "candidate_x": x,
+                            "candidate_y": y,
+                            "candidate_ra_deg": f"{ra:.8f}",
+                            "candidate_dec_deg": f"{dec:.8f}",
+                            "radius_arcsec": f"{radius_arcsec:.6f}",
+                            "result_index": j,
+                            "hip": item.get("hip"),
+                            "match_ra_deg": f"{item_ra:.8f}" if item_ra is not None else "",
+                            "match_dec_deg": f"{item_dec:.8f}" if item_dec is not None else "",
+                            "match_x": f"{match_x:.4f}" if match_x is not None else "",
+                            "match_y": f"{match_y:.4f}" if match_y is not None else "",
+                            "mag": item.get("mag"),
+                            "separation_arcsec": item.get("separation_arcsec"),
+                            "raw_json": json.dumps(item, ensure_ascii=False),
+                        }
+                    )
+            except Exception:
+                pass
 
-        # 2) Variable (only when HIP queried successfully and no hit)
+        # 2) Variable (query when service is healthy and HIP gate allows it)
         var_success = False
         var_count = -1
-        if hip_success and hip_count < 1:
+        if var_available and ((not hip_available) or (hip_success and hip_count < 1)):
             try:
                 n_var_queried += 1
                 var_resp = request_search(
@@ -368,8 +393,10 @@ def main():
             except Exception:
                 pass
 
-        # 3) MPC (only when HIP and Variable both queried successfully and both no hit)
-        if hip_success and var_success and hip_count < 1 and var_count < 1 and mjd is not None:
+        # 3) MPC (query when service is healthy and upstream gates allow it)
+        allow_hip_gate = (not hip_available) or (hip_success and hip_count < 1)
+        allow_var_gate = (not var_available) or (var_success and var_count < 1)
+        if mpc_available and allow_hip_gate and allow_var_gate and mjd is not None:
             try:
                 n_mpc_queried += 1
                 mpc_resp = request_search(
