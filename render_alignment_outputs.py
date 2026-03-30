@@ -12,6 +12,7 @@ from alignment_common import (
     resample_b_to_a,
     save_png,
 )
+from timing_logger import run_script_with_timing
 
 
 def _ordered_hull(x, y):
@@ -149,4 +150,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    run_script_with_timing(main, script_name=Path(__file__).name)

@@ -6,6 +6,7 @@ import numpy as np
 from astropy.io import fits
 
 from alignment_common import detect_stars, select_stars_uniform_grid
+from timing_logger import run_script_with_timing
 
 
 def parse_args():
@@ -299,4 +300,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    run_script_with_timing(main, script_name=Path(__file__).name)

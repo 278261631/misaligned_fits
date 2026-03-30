@@ -11,6 +11,8 @@ from scipy.ndimage import gaussian_filter, map_coordinates
 from scipy.signal import fftconvolve
 from scipy.spatial import cKDTree
 
+from timing_logger import run_script_with_timing
+
 
 def detect_stars(image, max_stars=5000):
     detect_cfg = [(8.0, 3.0, 5.0, 3.0)]
@@ -283,4 +285,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    run_script_with_timing(main, script_name=Path(__file__).name)

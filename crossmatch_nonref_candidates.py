@@ -10,6 +10,8 @@ from astropy.io import fits
 from astropy.visualization import ImageNormalize, PercentileInterval, SqrtStretch
 from astropy.wcs import WCS
 
+from timing_logger import run_script_with_timing
+
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -529,5 +531,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    run_script_with_timing(main, script_name=Path(__file__).name)
 

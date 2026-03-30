@@ -14,6 +14,7 @@ from astropy.visualization import ImageNormalize, PercentileInterval, SqrtStretc
 from scipy.spatial import cKDTree
 
 from alignment_common import build_matches, detect_stars, estimate_translation_from_stars, eval_poly
+from timing_logger import run_script_with_timing
 
 
 def parse_args():
@@ -1448,4 +1449,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    run_script_with_timing(main, script_name=Path(__file__).name)

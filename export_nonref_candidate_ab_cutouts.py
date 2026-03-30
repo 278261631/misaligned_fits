@@ -1,6 +1,9 @@
 from pathlib import Path
 import argparse
 import csv
+import json
+import time
+from collections import defaultdict
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -8,6 +11,7 @@ from astropy.io import fits
 from astropy.visualization import ImageNormalize, PercentileInterval, SqrtStretch
 
 from alignment_common import eval_poly
+from timing_logger import TimingLogger, resolve_timing_path
 
 
 def parse_args():
@@ -53,6 +57,30 @@ def parse_args():
         help="Annotate top-N brightest stars (per panel) by flux.",
     )
     parser.add_argument("--dpi", type=int, default=140, help="Output PNG DPI.")
+    parser.add_argument(
+        "--timing-jsonl",
+        type=Path,
+        default=None,
+        help="Optional timing JSONL path (default: output/timing.jsonl or MISALIGNED_FITS_TIMING_PATH).",
+    )
+    parser.add_argument(
+        "--timing-run-id",
+        type=str,
+        default=None,
+        help="Optional run_id used when writing timing events (default: MISALIGNED_FITS_RUN_ID or auto-generated).",
+    )
+    parser.add_argument(
+        "--timing-filter-run-id",
+        type=str,
+        default=None,
+        help="Filter run_id used when drawing timing summary; default follows --timing-run-id when provided.",
+    )
+    parser.add_argument(
+        "--timing-plot",
+        type=Path,
+        default=None,
+        help="Output path for timing summary PNG (default: <out_dir>/timing_summary.png).",
+    )
     return parser.parse_args()
 
 
@@ -171,154 +199,286 @@ def annotate_star_flux(ax, points, flux, top_n):
         )
 
 
+def load_timing_events(path: Path, run_id: str | None = None):
+    if not path.exists():
+        return []
+    events = []
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            s = line.strip()
+            if not s:
+                continue
+            try:
+                item = json.loads(s)
+            except Exception:
+                continue
+            if run_id is not None and str(item.get("run_id", "")) != str(run_id):
+                continue
+            duration_ms = parse_float(item.get("duration_ms"))
+            if duration_ms is None:
+                continue
+            events.append(
+                {
+                    "script": str(item.get("script", "")),
+                    "step": str(item.get("step", "")),
+                    "duration_ms": float(duration_ms),
+                    "status": str(item.get("status", "")),
+                    "run_id": str(item.get("run_id", "")),
+                }
+            )
+    return events
+
+
+def save_timing_summary_png(events, out_png: Path):
+    grouped = defaultdict(float)
+    grouped_script = defaultdict(float)
+    n_error = 0
+    for ev in events:
+        key = f"{ev['script']}::{ev['step']}"
+        grouped[key] += float(ev["duration_ms"])
+        grouped_script[ev["script"]] += float(ev["duration_ms"])
+        if str(ev.get("status", "")) != "ok":
+            n_error += 1
+
+    if len(grouped) == 0:
+        return False
+
+    order = sorted(grouped.items(), key=lambda kv: kv[1], reverse=True)
+    top = order[: min(24, len(order))]
+    labels = [k for k, _ in top][::-1]
+    secs = [v / 1000.0 for _, v in top][::-1]
+
+    fig = plt.figure(figsize=(12, 8))
+    ax = fig.add_subplot(111)
+    ax.barh(np.arange(len(labels)), secs, color="#4C78A8")
+    ax.set_yticks(np.arange(len(labels)))
+    ax.set_yticklabels(labels, fontsize=8)
+    ax.set_xlabel("Total duration (seconds)")
+    ax.set_title("Timing Summary (Top step totals)")
+    ax.grid(True, axis="x", alpha=0.25, linestyle="--")
+
+    total_sec = float(sum(grouped.values())) / 1000.0
+    script_items = sorted(grouped_script.items(), key=lambda kv: kv[1], reverse=True)
+    top_script_txt = ", ".join([f"{k}:{v / 1000.0:.2f}s" for k, v in script_items[:5]])
+    fig.text(
+        0.01,
+        0.01,
+        f"events={len(events)}, errors={n_error}, total={total_sec:.2f}s, top_scripts={top_script_txt}",
+        fontsize=8,
+        ha="left",
+        va="bottom",
+    )
+    fig.tight_layout(rect=[0, 0.03, 1, 1])
+    out_png.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_png, dpi=160)
+    plt.close(fig)
+    return True
+
+
 def main():
     args = parse_args()
-    input_csv = args.input_csv
-    if not input_csv.exists():
-        raise RuntimeError(f"Input CSV not found: {input_csv}")
-
-    out_dir = args.out_dir if args.out_dir is not None else (input_csv.parent / "output")
-    out_dir = resolve_path(input_csv, out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    a_fits = resolve_path(input_csv, args.a_fits)
-    b_fits = resolve_path(input_csv, args.b_fits)
-    a_stars_all = resolve_path(input_csv, args.a_stars_all)
-    b_stars_all = resolve_path(input_csv, args.b_stars_all)
-    align_npz = resolve_path(input_csv, args.align_npz) if args.align_npz is not None else None
-
-    if a_fits is None or not a_fits.exists():
-        raise RuntimeError(f"A FITS not found: {a_fits}")
-    if b_fits is None or not b_fits.exists():
-        raise RuntimeError(f"B FITS not found: {b_fits}")
-    if a_stars_all is None or not a_stars_all.exists():
-        raise RuntimeError(f"A stars.all NPZ not found: {a_stars_all}")
-    if b_stars_all is None or not b_stars_all.exists():
-        raise RuntimeError(f"B stars.all NPZ not found: {b_stars_all}")
-    if (not bool(args.b_aligned_to_a)) and align_npz is None:
-        raise RuntimeError("Need --align-npz unless --b-aligned-to-a is set.")
-    if align_npz is not None and (not align_npz.exists()):
-        raise RuntimeError(f"Align NPZ not found: {align_npz}")
-
-    cutout_size = int(args.cutout_size)
-    if cutout_size <= 0:
-        raise RuntimeError("--cutout-size must be > 0.")
-
-    a_img = fits.getdata(a_fits).astype(np.float32)
-    b_img = fits.getdata(b_fits).astype(np.float32)
-    a_xy, a_flux = load_stars_npz(a_stars_all)
-    b_xy, b_flux = load_stars_npz(b_stars_all)
-    cx, cy, fit_degree = load_alignment(align_npz)
-
-    with input_csv.open("r", newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        rows = list(reader)
-
-    if int(args.max_rows) > 0:
-        rows = rows[: int(args.max_rows)]
-
+    timing_path = resolve_timing_path(args.timing_jsonl)
+    logger = TimingLogger(
+        script=Path(__file__).name,
+        timing_path=timing_path,
+        run_id=args.timing_run_id,
+    )
+    t_script0 = time.perf_counter()
     n_ok = 0
-    for row_idx, row in enumerate(rows, start=1):
-        rank_raw = row.get("rank", "")
-        x = parse_float(row.get("x"))
-        y = parse_float(row.get("y"))
-        if x is None or y is None:
-            continue
+    n_skipped = 0
 
-        if bool(args.b_aligned_to_a):
-            bx = float(x)
-            by = float(y)
-        else:
-            bx_arr, by_arr = eval_poly(
-                np.asarray([float(x)], dtype=np.float64),
-                np.asarray([float(y)], dtype=np.float64),
-                cx,
-                cy,
-                degree=int(fit_degree),
+    try:
+        input_csv = args.input_csv
+        if not input_csv.exists():
+            raise RuntimeError(f"Input CSV not found: {input_csv}")
+
+        out_dir = args.out_dir if args.out_dir is not None else (input_csv.parent / "output")
+        out_dir = resolve_path(input_csv, out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        a_fits = resolve_path(input_csv, args.a_fits)
+        b_fits = resolve_path(input_csv, args.b_fits)
+        a_stars_all = resolve_path(input_csv, args.a_stars_all)
+        b_stars_all = resolve_path(input_csv, args.b_stars_all)
+        align_npz = resolve_path(input_csv, args.align_npz) if args.align_npz is not None else None
+
+        if a_fits is None or not a_fits.exists():
+            raise RuntimeError(f"A FITS not found: {a_fits}")
+        if b_fits is None or not b_fits.exists():
+            raise RuntimeError(f"B FITS not found: {b_fits}")
+        if a_stars_all is None or not a_stars_all.exists():
+            raise RuntimeError(f"A stars.all NPZ not found: {a_stars_all}")
+        if b_stars_all is None or not b_stars_all.exists():
+            raise RuntimeError(f"B stars.all NPZ not found: {b_stars_all}")
+        if (not bool(args.b_aligned_to_a)) and align_npz is None:
+            raise RuntimeError("Need --align-npz unless --b-aligned-to-a is set.")
+        if align_npz is not None and (not align_npz.exists()):
+            raise RuntimeError(f"Align NPZ not found: {align_npz}")
+
+        cutout_size = int(args.cutout_size)
+        if cutout_size <= 0:
+            raise RuntimeError("--cutout-size must be > 0.")
+        logger.write_event(
+            "prepare_paths_and_args",
+            (time.perf_counter() - t_script0) * 1000.0,
+            meta={"cutout_size": cutout_size},
+        )
+
+        with logger.step("load_inputs"):
+            a_img = fits.getdata(a_fits).astype(np.float32)
+            b_img = fits.getdata(b_fits).astype(np.float32)
+            a_xy, a_flux = load_stars_npz(a_stars_all)
+            b_xy, b_flux = load_stars_npz(b_stars_all)
+            cx, cy, fit_degree = load_alignment(align_npz)
+
+        with logger.step("read_candidate_csv"):
+            with input_csv.open("r", newline="", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                rows = list(reader)
+
+        if int(args.max_rows) > 0:
+            rows = rows[: int(args.max_rows)]
+
+        t_loop0 = time.perf_counter()
+        for row_idx, row in enumerate(rows, start=1):
+            rank_raw = row.get("rank", "")
+            x = parse_float(row.get("x"))
+            y = parse_float(row.get("y"))
+            if x is None or y is None:
+                n_skipped += 1
+                continue
+
+            if bool(args.b_aligned_to_a):
+                bx = float(x)
+                by = float(y)
+            else:
+                bx_arr, by_arr = eval_poly(
+                    np.asarray([float(x)], dtype=np.float64),
+                    np.asarray([float(y)], dtype=np.float64),
+                    cx,
+                    cy,
+                    degree=int(fit_degree),
+                )
+                bx = float(bx_arr[0])
+                by = float(by_arr[0])
+
+            a_patch, a_x0, a_y0 = extract_cutout(a_img, x, y, cutout_size)
+            b_patch, b_x0, b_y0 = extract_cutout(b_img, bx, by, cutout_size)
+
+            a_pts, a_f = stars_in_cutout(a_xy, a_flux, a_x0, a_y0, cutout_size)
+            b_pts, b_f = stars_in_cutout(b_xy, b_flux, b_x0, b_y0, cutout_size)
+
+            a_view, a_norm = safe_norm(a_patch)
+            b_view, b_norm = safe_norm(b_patch)
+
+            fig, axes = plt.subplots(1, 2, figsize=(10, 5), dpi=int(args.dpi))
+            ax_a, ax_b = axes
+            ax_a.imshow(a_view, origin="lower", cmap="gray", norm=a_norm, interpolation="nearest")
+            ax_b.imshow(b_view, origin="lower", cmap="gray", norm=b_norm, interpolation="nearest")
+
+            ax_a.scatter([float(x) - a_x0], [float(y) - a_y0], marker="+", s=70, c="#FFD400", linewidths=1.2)
+            ax_b.scatter([float(bx) - b_x0], [float(by) - b_y0], marker="+", s=70, c="#FFD400", linewidths=1.2)
+
+            if len(a_pts) > 0:
+                ax_a.scatter(
+                    a_pts[:, 0], a_pts[:, 1], s=16, facecolors="none", edgecolors="#00E5FF", linewidths=0.8, alpha=0.9
+                )
+            if len(b_pts) > 0:
+                ax_b.scatter(
+                    b_pts[:, 0], b_pts[:, 1], s=16, facecolors="none", edgecolors="#00E5FF", linewidths=0.8, alpha=0.9
+                )
+
+            annotate_star_flux(ax_a, a_pts, a_f, top_n=int(args.annotate_top_n))
+            annotate_star_flux(ax_b, b_pts, b_f, top_n=int(args.annotate_top_n))
+
+            ax_a.text(
+                0.02,
+                0.98,
+                short_flux_summary(a_f),
+                transform=ax_a.transAxes,
+                ha="left",
+                va="top",
+                fontsize=7,
+                color="white",
+                bbox=dict(facecolor="black", alpha=0.45, edgecolor="none", pad=2),
             )
-            bx = float(bx_arr[0])
-            by = float(by_arr[0])
+            ax_b.text(
+                0.02,
+                0.98,
+                short_flux_summary(b_f),
+                transform=ax_b.transAxes,
+                ha="left",
+                va="top",
+                fontsize=7,
+                color="white",
+                bbox=dict(facecolor="black", alpha=0.45, edgecolor="none", pad=2),
+            )
 
-        a_patch, a_x0, a_y0 = extract_cutout(a_img, x, y, cutout_size)
-        b_patch, b_x0, b_y0 = extract_cutout(b_img, bx, by, cutout_size)
+            ax_a.set_title("A cutout + A stars.all")
+            ax_b.set_title("B cutout + B stars.all")
+            for ax in axes:
+                ax.set_xlim(-0.5, cutout_size - 0.5)
+                ax.set_ylim(cutout_size - 0.5, -0.5)
+                ax.set_axis_off()
 
-        a_pts, a_f = stars_in_cutout(a_xy, a_flux, a_x0, a_y0, cutout_size)
-        b_pts, b_f = stars_in_cutout(b_xy, b_flux, b_x0, b_y0, cutout_size)
+            rank_label = str(rank_raw).strip()
+            try:
+                rank_int = int(float(rank_label))
+                rank_tag = f"{rank_int:04d}"
+            except Exception:
+                rank_tag = f"r{row_idx:04d}"
+            out_name = f"rank_{rank_tag}_x{float(x):.2f}_y{float(y):.2f}_ab.png"
+            out_path = out_dir / out_name
+            fig.tight_layout()
+            fig.savefig(out_path, dpi=int(args.dpi))
+            plt.close(fig)
+            n_ok += 1
 
-        a_view, a_norm = safe_norm(a_patch)
-        b_view, b_norm = safe_norm(b_patch)
-
-        fig, axes = plt.subplots(1, 2, figsize=(10, 5), dpi=int(args.dpi))
-        ax_a, ax_b = axes
-        ax_a.imshow(a_view, origin="lower", cmap="gray", norm=a_norm, interpolation="nearest")
-        ax_b.imshow(b_view, origin="lower", cmap="gray", norm=b_norm, interpolation="nearest")
-
-        ax_a.scatter([float(x) - a_x0], [float(y) - a_y0], marker="+", s=70, c="#FFD400", linewidths=1.2)
-        ax_b.scatter([float(bx) - b_x0], [float(by) - b_y0], marker="+", s=70, c="#FFD400", linewidths=1.2)
-
-        if len(a_pts) > 0:
-            ax_a.scatter(a_pts[:, 0], a_pts[:, 1], s=16, facecolors="none", edgecolors="#00E5FF", linewidths=0.8, alpha=0.9)
-        if len(b_pts) > 0:
-            ax_b.scatter(b_pts[:, 0], b_pts[:, 1], s=16, facecolors="none", edgecolors="#00E5FF", linewidths=0.8, alpha=0.9)
-
-        annotate_star_flux(ax_a, a_pts, a_f, top_n=int(args.annotate_top_n))
-        annotate_star_flux(ax_b, b_pts, b_f, top_n=int(args.annotate_top_n))
-
-        ax_a.text(
-            0.02,
-            0.98,
-            short_flux_summary(a_f),
-            transform=ax_a.transAxes,
-            ha="left",
-            va="top",
-            fontsize=7,
-            color="white",
-            bbox=dict(facecolor="black", alpha=0.45, edgecolor="none", pad=2),
-        )
-        ax_b.text(
-            0.02,
-            0.98,
-            short_flux_summary(b_f),
-            transform=ax_b.transAxes,
-            ha="left",
-            va="top",
-            fontsize=7,
-            color="white",
-            bbox=dict(facecolor="black", alpha=0.45, edgecolor="none", pad=2),
+        logger.write_event(
+            "export_ab_cutouts",
+            (time.perf_counter() - t_loop0) * 1000.0,
+            meta={"rows_total": len(rows), "rows_exported": n_ok, "rows_skipped": n_skipped},
         )
 
-        ax_a.set_title("A cutout + A stars.all")
-        ax_b.set_title("B cutout + B stars.all")
-        for ax in axes:
-            ax.set_xlim(-0.5, cutout_size - 0.5)
-            ax.set_ylim(cutout_size - 0.5, -0.5)
-            ax.set_axis_off()
+        timing_plot_path = (
+            resolve_path(input_csv, args.timing_plot) if args.timing_plot is not None else (out_dir / "timing_summary.png")
+        )
+        filter_run_id = args.timing_filter_run_id if args.timing_filter_run_id else args.timing_run_id
+        with logger.step("plot_timing_summary", meta={"filter_run_id": filter_run_id or "ALL"}):
+            events = load_timing_events(timing_path, run_id=filter_run_id)
+            wrote_plot = save_timing_summary_png(events, timing_plot_path)
 
-        rank_label = str(rank_raw).strip()
-        try:
-            rank_int = int(float(rank_label))
-            rank_tag = f"{rank_int:04d}"
-        except Exception:
-            rank_tag = f"r{row_idx:04d}"
-        out_name = f"rank_{rank_tag}_x{float(x):.2f}_y{float(y):.2f}_ab.png"
-        out_path = out_dir / out_name
-        fig.tight_layout()
-        fig.savefig(out_path, dpi=int(args.dpi))
-        plt.close(fig)
-        n_ok += 1
-
-    print(f"Input CSV: {input_csv}")
-    print(f"A FITS: {a_fits}")
-    print(f"B FITS: {b_fits}")
-    print(f"A stars.all: {a_stars_all}")
-    print(f"B stars.all: {b_stars_all}")
-    if bool(args.b_aligned_to_a):
-        print("B center source: same as A (--b-aligned-to-a)")
-    else:
-        print(f"B center source: align NPZ {align_npz}, fit_degree={fit_degree}")
-    print(f"cutout_size={cutout_size}")
-    print(f"WROTE DIR {out_dir}")
-    print(f"exported_png_count={n_ok}")
+        print(f"Input CSV: {input_csv}")
+        print(f"A FITS: {a_fits}")
+        print(f"B FITS: {b_fits}")
+        print(f"A stars.all: {a_stars_all}")
+        print(f"B stars.all: {b_stars_all}")
+        if bool(args.b_aligned_to_a):
+            print("B center source: same as A (--b-aligned-to-a)")
+        else:
+            print(f"B center source: align NPZ {align_npz}, fit_degree={fit_degree}")
+        print(f"cutout_size={cutout_size}")
+        print(f"timing_jsonl={timing_path}")
+        print(f"timing_run_id={logger.run_id}")
+        if wrote_plot:
+            print(f"WROTE {timing_plot_path}")
+        else:
+            print(f"SKIP timing summary PNG (no events matched): {timing_plot_path}")
+        print(f"WROTE DIR {out_dir}")
+        print(f"exported_png_count={n_ok}")
+        logger.write_event(
+            "script_total",
+            (time.perf_counter() - t_script0) * 1000.0,
+            meta={"rows_exported": n_ok, "rows_skipped": n_skipped},
+        )
+    except Exception as exc:
+        logger.write_event(
+            "script_total",
+            (time.perf_counter() - t_script0) * 1000.0,
+            status="error",
+            meta={"rows_exported": n_ok, "rows_skipped": n_skipped, "error": str(exc)},
+        )
+        raise
 
 
 if __name__ == "__main__":
