@@ -1,4 +1,9 @@
 
+set "EXPORT_MIN_FLUX=1"
+set "EXPORT_MIN_FLUX_PERCENTILE=20"
+set "REPROJECT_MIN_FLUX=5"
+set "REPROJECT_MIN_FLUX_PERCENTILE=40"
+
 
 python "D:/github/misaligned_fits/export_fits_stars.py" ^
     --fits "D:/missalign/gy2_K043-7.fits" ^
@@ -6,6 +11,7 @@ python "D:/github/misaligned_fits/export_fits_stars.py" ^
     --out-valid-region "D:/missalign/gy2_K043-7.effective.json" ^
     --out-valid-region-png "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_/gy2_K043-7.effective.png" ^
     --out-all "D:/missalign/gy2_K043-7.stars.all.npz" ^
+    --min-flux %EXPORT_MIN_FLUX% --min-flux-percentile %EXPORT_MIN_FLUX_PERCENTILE% ^
     --uniform-grid-x 7 --uniform-grid-y 7 --uniform-per-cell 100 ^
     --out-all-png "D:/missalign/gy2_K043-7.stars.all.png"
 
@@ -21,6 +27,7 @@ python "D:\github\misaligned_fits\reproject_wcs_and_export_stars.py" ^
     --out-stars "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_.rp.stars.npz" ^
     --out-stars-all "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_.rp.stars.all.npz" ^
     --out-stars-all-png "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_.rp.stars.all.png" ^
+    --min-flux %REPROJECT_MIN_FLUX% --min-flux-percentile %REPROJECT_MIN_FLUX_PERCENTILE% ^
     --skip-median-filter --max-stars "5000" ^
     --uniform-grid-x 7 --uniform-grid-y 7 --uniform-per-cell 100
 
@@ -79,6 +86,7 @@ python "D:/github/misaligned_fits/export_fits_stars.py" ^
     --out-valid-region "D:/align/gy3_K043-8.effective.json" ^
     --out-valid-region-png "D:/align/GY3_K043-8_UTC20260310_163817_-25C_/gy3_K043-8.effective.png" ^
     --out-all "D:/align/gy3_K043-8.stars.all.npz" ^
+    --min-flux %EXPORT_MIN_FLUX% --min-flux-percentile %EXPORT_MIN_FLUX_PERCENTILE% ^
     --uniform-grid-x 7 --uniform-grid-y 7 --uniform-per-cell 100 ^
     --out-all-png "D:/align/gy3_K043-8.stars.all.png"
 
@@ -94,6 +102,7 @@ python "D:/github/misaligned_fits/reproject_wcs_and_export_stars.py" ^
     --out-stars "D:/align/GY3_K043-8_UTC20260310_163817_-25C_.rp.stars.npz" ^
     --out-stars-all "D:/align/GY3_K043-8_UTC20260310_163817_-25C_.rp.stars.all.npz" ^
     --out-stars-all-png "D:/align/GY3_K043-8_UTC20260310_163817_-25C_.rp.stars.all.png" ^
+    --min-flux %REPROJECT_MIN_FLUX% --min-flux-percentile %REPROJECT_MIN_FLUX_PERCENTILE% ^
     --skip-median-filter --max-stars "5000" ^
     --uniform-grid-x 7 --uniform-grid-y 7 --uniform-per-cell 100
 

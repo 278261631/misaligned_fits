@@ -64,6 +64,18 @@ def parse_args():
         default=95.0,
         help="Only stars above this flux percentile are marked in --out-all-png (default: 95).",
     )
+    parser.add_argument(
+        "--min-flux",
+        type=float,
+        default=1.0,
+        help="Absolute lower bound for exported star flux (keep flux >= this value, default: 1).",
+    )
+    parser.add_argument(
+        "--min-flux-percentile",
+        type=float,
+        default=20.0,
+        help="Percentile-based lower bound for exported star flux (0-100, default: 20).",
+    )
     return parser.parse_args()
 
 
@@ -242,10 +254,41 @@ def main():
     )
 
     xy_all, flux_all = detect_stars(data, max_stars=0)
-    if len(xy_all) == 0:
+    stars_detected_raw = int(len(xy_all))
+    if stars_detected_raw == 0:
         raise RuntimeError(f"No stars detected: {fits_path}")
+
+    flux_thr_abs = float(args.min_flux) if args.min_flux is not None else None
+    flux_thr_pct = None
+    flux_thr_pct_value = None
+    flux_filter_threshold = None
+    if args.min_flux_percentile is not None:
+        flux_thr_pct = float(np.clip(float(args.min_flux_percentile), 0.0, 100.0))
+        flux_thr_pct_value = float(np.percentile(flux_all, flux_thr_pct))
+
+    thr_candidates = []
+    if flux_thr_abs is not None:
+        thr_candidates.append(float(flux_thr_abs))
+    if flux_thr_pct_value is not None:
+        thr_candidates.append(float(flux_thr_pct_value))
+    if len(thr_candidates) > 0:
+        flux_filter_threshold = max(thr_candidates)
+        keep = np.asarray(flux_all, dtype=np.float64) >= float(flux_filter_threshold)
+        xy_all = xy_all[keep]
+        flux_all = flux_all[keep]
+        if len(xy_all) == 0:
+            raise RuntimeError(
+                "No stars remain after flux filtering. "
+                f"min_flux={flux_thr_abs}, min_flux_percentile={flux_thr_pct}, "
+                f"applied_threshold={float(flux_filter_threshold):.6g}"
+            )
+
     if args.no_uniform_selection:
-        xy_align, flux_align = detect_stars(data, max_stars=args.max_stars)
+        order = np.argsort(flux_all)[::-1]
+        if int(args.max_stars) > 0:
+            order = order[: int(args.max_stars)]
+        xy_align = xy_all[order]
+        flux_align = flux_all[order]
     else:
         xy_align, flux_align = select_stars_uniform_grid(
             xy_all,
@@ -288,6 +331,17 @@ def main():
     )
     print(f"stars_align={len(xy_align)}")
     print(f"stars_all={len(xy_all)}")
+    print(f"stars_detected_raw={stars_detected_raw}")
+    if flux_filter_threshold is None:
+        print("flux_filter=disabled")
+    else:
+        print(
+            "flux_filter=enabled "
+            f"min_flux={flux_thr_abs} "
+            f"min_flux_percentile={flux_thr_pct} "
+            f"threshold={float(flux_filter_threshold):.6g} "
+            f"kept={len(xy_all)}/{stars_detected_raw}"
+        )
     if args.no_uniform_selection:
         print("uniform_selection=disabled")
     else:

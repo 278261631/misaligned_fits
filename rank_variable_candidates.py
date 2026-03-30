@@ -52,7 +52,7 @@ def parse_args():
         "--out-csv-nonref-inner-border-pre-knee",
         type=Path,
         default=None,
-        help="Output CSV for nonref inner-border stars before knee/top-k truncation (still excludes ref-nearby points).",
+        help="Output CSV for nonref inner-border stars before flux-threshold/top-k truncation (still excludes ref-nearby points).",
     )
     parser.add_argument(
         "--out-overlap-expr",
@@ -1121,11 +1121,8 @@ def main():
             "drop_reason_after_pre_knee",
         ]
         max_inner_csv = int(args.top_k_nonref_inner_border_csv)
+        nonref_inner_min_median_flux_norm = 10.0
         nonref_order_inside = nonref_order[nonref_inside[nonref_order]]
-        knee_keep_n = detect_knee_keep_count_desc(nonref_median_flux[nonref_order_inside], min_count=8)
-        keep_by_knee = np.zeros(nonref_count, dtype=bool)
-        if knee_keep_n > 0:
-            keep_by_knee[nonref_order_inside[:knee_keep_n]] = True
         if do_nonref_ref_check:
             nearest_dist_all = np.asarray(ref_tree.query(nonref_xy_arr, k=1)[0], dtype=np.float64)
             has_ref_nearby_all = np.asarray(nearest_dist_all <= nonref_ref_check_radius, dtype=bool)
@@ -1141,8 +1138,8 @@ def main():
                 continue
             if has_ref_nearby_all[i]:
                 continue
-            if not keep_by_knee[i]:
-                drop_reason_after_pre_knee[i] = "below_knee_cut"
+            if not (float(nonref_median_flux[i]) > float(nonref_inner_min_median_flux_norm)):
+                drop_reason_after_pre_knee[i] = "median_flux_norm_le_10"
                 continue
             if max_inner_csv > 0 and rank_inner > max_inner_csv:
                 drop_reason_after_pre_knee[i] = "exceeds_top_k_nonref_inner_border_csv"
@@ -1161,7 +1158,7 @@ def main():
                 frame_names = ";".join(sorted(nonref_frame_sets[i]))
                 nearest_ref_dist = float(nearest_dist_all[i])
                 has_ref_nearby = bool(has_ref_nearby_all[i])
-                # Pre-knee CSV still excludes points near reference stars (definition A).
+                # Pre-filter CSV still excludes points near reference stars (definition A).
                 if has_ref_nearby:
                     continue
                 if ref_wcs is not None:
@@ -1436,6 +1433,7 @@ def main():
     print(f"WROTE {out_png}")
     print(f"WROTE {out_png_aligned}")
     print(f"Non-reference-only stars: {nonref_count}")
+    print("Inner-border nonref filter: median_flux_norm > 10 (knee disabled)")
     print(f"Reference-only (missing in all used targets): {len(ref_missing_order)}")
 
     if matched_counts:
