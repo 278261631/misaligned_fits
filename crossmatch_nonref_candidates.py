@@ -43,6 +43,12 @@ def parse_args():
         default=None,
         help="Output matched MPC rows CSV path (default: <input_dir>/find_mpc.csv).",
     )
+    parser.add_argument(
+        "--mpc-debug-jsonl",
+        type=Path,
+        default=None,
+        help="Output MPC raw response debug JSONL path (default: <input_dir>/mpc_debug_raw.jsonl).",
+    )
     parser.add_argument("--var-host", default="127.0.0.1", help="Variable server host.")
     parser.add_argument("--var-port", type=int, default=5000, help="Variable server port.")
     parser.add_argument("--mpc-host", default="127.0.0.1", help="MPC server host.")
@@ -53,7 +59,7 @@ def parse_args():
         default=None,
         help="Reference FITS used to convert matched RA/DEC back to pixel x/y.",
     )
-    parser.add_argument("--timeout-sec", type=float, default=8.0, help="HTTP timeout in seconds.")
+    parser.add_argument("--timeout-sec", type=float, default=45.0, help="HTTP timeout in seconds.")
     parser.add_argument(
         "--overwrite",
         action="store_true",
@@ -80,6 +86,22 @@ def request_search(url, params, timeout_sec):
     return r.json()
 
 
+def response_success(resp):
+    if not isinstance(resp, dict):
+        return False
+    if "success" in resp:
+        v = resp.get("success")
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, (int, float)):
+            return v != 0
+        if isinstance(v, str):
+            return v.strip().lower() in {"1", "true", "yes", "ok", "success"}
+        return bool(v)
+    # Some services omit "success" and only return count/results.
+    return ("count" in resp) or ("results" in resp)
+
+
 def check_service_health(service_name, host, port, timeout_sec):
     health_url = f"http://{host}:{port}/health"
     try:
@@ -101,6 +123,14 @@ def write_rows_csv(path: Path, rows, fieldnames):
         writer.writeheader()
         for row in rows:
             writer.writerow(row)
+
+
+def write_jsonl(path: Path, rows):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        for row in rows:
+            f.write(json.dumps(row, ensure_ascii=False))
+            f.write("\n")
 
 
 def load_reference_wcs(ref_fits: Path | None, input_csv: Path):
@@ -241,8 +271,11 @@ def main():
 
     out_var = args.find_variable_csv if args.find_variable_csv is not None else input_csv.with_name("find_variable.csv")
     out_mpc = args.find_mpc_csv if args.find_mpc_csv is not None else input_csv.with_name("find_mpc.csv")
+    out_mpc_debug = (
+        args.mpc_debug_jsonl if args.mpc_debug_jsonl is not None else input_csv.with_name("mpc_debug_raw.jsonl")
+    )
     out_match_png = input_csv.with_name("variable_candidates_rank_aligned_to_a_match.png")
-    expected_outputs = [out_var, out_mpc, out_match_png]
+    expected_outputs = [out_var, out_mpc, out_mpc_debug, out_match_png]
     if (not args.overwrite) and all(p.exists() for p in expected_outputs):
         print("SKIP crossmatch_nonref_candidates.py: outputs already exist (use --overwrite to regenerate)")
         for p in expected_outputs:
@@ -267,6 +300,7 @@ def main():
 
     variable_rows = []
     mpc_rows = []
+    mpc_debug_rows = []
     n_var_queried = 0
     n_mpc_queried = 0
 
@@ -345,13 +379,32 @@ def main():
         if mpc_available and allow_var_gate and mjd is not None:
             try:
                 n_mpc_queried += 1
+                mpc_params = {"ra": ra, "dec": dec, "epoch": mjd, "radius": radius_arcsec}
                 mpc_resp = request_search(
                     mpc_url,
-                    {"ra": ra, "dec": dec, "epoch": mjd, "radius": radius_arcsec},
+                    mpc_params,
                     timeout_sec=float(args.timeout_sec),
                 )
-                if bool(mpc_resp.get("success", False)):
-                    mpc_count = int(mpc_resp.get("count", 0))
+                mpc_debug_rows.append(
+                    {
+                        "rank": rank,
+                        "candidate_x": x,
+                        "candidate_y": y,
+                        "ra_deg": ra,
+                        "dec_deg": dec,
+                        "mjd": mjd,
+                        "radius_arcsec": radius_arcsec,
+                        "request_params": mpc_params,
+                        "response": mpc_resp,
+                        "response_success_eval": response_success(mpc_resp),
+                    }
+                )
+                if response_success(mpc_resp):
+                    count_raw = mpc_resp.get("count", None)
+                    if count_raw is None:
+                        mpc_count = len(mpc_resp.get("results", []) or [])
+                    else:
+                        mpc_count = int(count_raw)
                     row["mpc_count"] = str(mpc_count)
                     for j, item in enumerate(mpc_resp.get("results", []), start=1):
                         item_ra, item_dec = extract_item_ra_dec(item)
@@ -376,8 +429,26 @@ def main():
                                 "raw_json": json.dumps(item, ensure_ascii=False),
                             }
                         )
-            except Exception:
-                pass
+                else:
+                    print(
+                        f"WARNING: MPC response marked unsuccessful for rank={rank}, "
+                        f"keys={sorted(mpc_resp.keys()) if isinstance(mpc_resp, dict) else type(mpc_resp).__name__}"
+                    )
+            except Exception as exc:
+                mpc_debug_rows.append(
+                    {
+                        "rank": rank,
+                        "candidate_x": x,
+                        "candidate_y": y,
+                        "ra_deg": ra,
+                        "dec_deg": dec,
+                        "mjd": mjd,
+                        "radius_arcsec": radius_arcsec,
+                        "request_params": {"ra": ra, "dec": dec, "epoch": mjd, "radius": radius_arcsec},
+                        "error": repr(exc),
+                    }
+                )
+                print(f"WARNING: MPC query failed for rank={rank}")
 
     write_rows_csv(
         out_var,
@@ -424,6 +495,7 @@ def main():
             "raw_json",
         ],
     )
+    write_jsonl(out_mpc_debug, mpc_debug_rows)
 
     with input_csv.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -447,6 +519,7 @@ def main():
     print(f"WROTE {input_csv}")
     print(f"WROTE {out_var}")
     print(f"WROTE {out_mpc}")
+    print(f"WROTE {out_mpc_debug}")
     print(f"queries: variable={n_var_queried}, mpc={n_mpc_queried}")
     print(f"matches: variable={len(variable_rows)}, mpc={len(mpc_rows)}")
 
