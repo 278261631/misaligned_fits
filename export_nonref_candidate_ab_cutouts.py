@@ -190,6 +190,18 @@ def annotate_star_flux(ax, points, flux, top_n):
         )
 
 
+def draw_crosshair(ax, x, y, gap=2.6, arm=8.0, color="#FFD400", lw=1.2):
+    x = float(x)
+    y = float(y)
+    gap = float(gap)
+    arm = float(arm)
+    # Four-segment reticle: leave center empty so the target stays visible.
+    ax.plot([x - arm, x - gap], [y, y], color=color, linewidth=lw)
+    ax.plot([x + gap, x + arm], [y, y], color=color, linewidth=lw)
+    ax.plot([x, x], [y - arm, y - gap], color=color, linewidth=lw)
+    ax.plot([x, x], [y + gap, y + arm], color=color, linewidth=lw)
+
+
 def load_timing_events(path: Path, run_id: str | None = None, script: str | None = None):
     if not path.exists():
         return []
@@ -360,27 +372,8 @@ def main():
             ax_a.imshow(a_view, origin="lower", cmap="gray", norm=a_norm, interpolation="nearest")
             ax_b.imshow(b_view, origin="lower", cmap="gray", norm=b_norm, interpolation="nearest")
 
-            # Use a hollow plus marker with a larger inner void for better visibility.
-            ax_a.plot(
-                [float(x) - a_x0],
-                [float(y) - a_y0],
-                linestyle="None",
-                marker="P",
-                markersize=11,
-                markerfacecolor="none",
-                markeredgecolor="#FFD400",
-                markeredgewidth=1.0,
-            )
-            ax_b.plot(
-                [float(bx) - b_x0],
-                [float(by) - b_y0],
-                linestyle="None",
-                marker="P",
-                markersize=11,
-                markerfacecolor="none",
-                markeredgecolor="#FFD400",
-                markeredgewidth=1.0,
-            )
+            draw_crosshair(ax_a, float(x) - a_x0, float(y) - a_y0)
+            draw_crosshair(ax_b, float(bx) - b_x0, float(by) - b_y0)
 
             if len(a_pts) > 0:
                 ax_a.scatter(
