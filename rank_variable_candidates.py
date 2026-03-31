@@ -1127,6 +1127,7 @@ def main():
     )
 
     t_rank_core = time.perf_counter()
+    t_rank_stage = time.perf_counter()
     flux_mat = np.vstack(measurements).T  # [n_ref, n_frames_used]
     n_obs = np.sum(np.isfinite(flux_mat), axis=1)
     med_flux = np.nanmedian(flux_mat, axis=1)
@@ -1136,11 +1137,28 @@ def main():
             [point_in_any_region(xy_ref[i, 0], xy_ref[i, 1], ref_valid_region_paths) for i in range(n_ref)],
             dtype=bool,
         )
+    logger.write_event(
+        "rank_build_flux_matrix_and_region_mask",
+        (time.perf_counter() - t_rank_stage) * 1000.0,
+        meta={
+            "n_ref_stars": int(n_ref),
+            "n_used_frames": int(flux_mat.shape[1]),
+            "has_ref_valid_region": int(ref_valid_region_paths is not None),
+        },
+    )
 
+    t_rank_stage = time.perf_counter()
     valid = (n_obs >= int(args.min_observations)) & np.isfinite(med_flux) & (med_flux > 0.0) & ref_region_ok
-    if np.count_nonzero(valid) == 0:
+    n_valid = int(np.count_nonzero(valid))
+    logger.write_event(
+        "rank_filter_valid_candidates",
+        (time.perf_counter() - t_rank_stage) * 1000.0,
+        meta={"valid_count": n_valid, "min_observations": int(args.min_observations)},
+    )
+    if n_valid == 0:
         raise RuntimeError("No stars meet min observation requirement.")
 
+    t_rank_stage = time.perf_counter()
     rel = flux_mat / np.maximum(med_flux[:, None], 1e-12)
     mad_rel = np.array([robust_mad(row[np.isfinite(row)]) for row in rel], dtype=np.float64)
     p95 = np.nanpercentile(rel, 95, axis=1)
@@ -1150,10 +1168,22 @@ def main():
     # Composite variability score. Higher means more variable-like.
     score = mad_rel + 0.5 * amp_rel
     score[~valid] = np.nan
+    logger.write_event(
+        "rank_compute_variability_metrics",
+        (time.perf_counter() - t_rank_stage) * 1000.0,
+        meta={"valid_count": n_valid},
+    )
 
+    t_rank_stage = time.perf_counter()
     idx = np.where(valid)[0]
     order = idx[np.argsort(score[idx])[::-1]]
+    logger.write_event(
+        "rank_sort_candidates",
+        (time.perf_counter() - t_rank_stage) * 1000.0,
+        meta={"ranked_candidates": int(len(order))},
+    )
 
+    t_rank_stage = time.perf_counter()
     with out_csv.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(
@@ -1181,6 +1211,11 @@ def main():
                     f"{med_flux[i]:.8f}",
                 ]
             )
+    logger.write_event(
+        "rank_write_csv",
+        (time.perf_counter() - t_rank_stage) * 1000.0,
+        meta={"rows_written": int(len(order))},
+    )
     logger.write_event(
         "compute_scores_and_write_rank_csv",
         (time.perf_counter() - t_rank_core) * 1000.0,
