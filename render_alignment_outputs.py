@@ -77,6 +77,11 @@ def parse_args():
     parser.add_argument("--b", type=Path, required=True, help="Target FITS path.")
     parser.add_argument("--align", type=Path, required=True, help="Alignment solution file (.npz).")
     parser.add_argument("--outdir", type=Path, default=None, help="Output directory (default: <a_dir>/direct_no_wcs).")
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite outputs; default skips when main outputs already exist.",
+    )
     return parser.parse_args()
 
 
@@ -85,25 +90,31 @@ def main():
     outdir = args.outdir if args.outdir is not None else (args.a.parent / "direct_no_wcs")
     outdir.mkdir(parents=True, exist_ok=True)
 
+    sol = np.load(args.align, allow_pickle=True)
+    fit_degree = int(np.asarray(sol["fit_degree"]).ravel()[0])
+    out_fits = outdir / f"{args.b.stem}_on_{args.a.stem}_from_stars_poly{fit_degree}.fits"
+    preview_png = outdir / f"{args.b.stem}_on_{args.a.stem}_from_stars_poly{fit_degree}_preview.png"
+    absdiff_png = outdir / f"{args.b.stem}_on_{args.a.stem}_absdiff_from_stars_poly{fit_degree}.png"
+    if (not args.overwrite) and out_fits.exists() and preview_png.exists() and absdiff_png.exists():
+        print("SKIP render_alignment_outputs.py: main outputs already exist (use --overwrite to regenerate)")
+        print(f"EXISTS {out_fits}")
+        print(f"EXISTS {preview_png}")
+        print(f"EXISTS {absdiff_png}")
+        return
+
     a_data = fits.getdata(args.a).astype(float)
     b_data = fits.getdata(args.b).astype(float)
     a_header = fits.getheader(args.a)
-
-    sol = np.load(args.align, allow_pickle=True)
     cx = np.asarray(sol["cx"], dtype=float)
     cy = np.asarray(sol["cy"], dtype=float)
-    fit_degree = int(np.asarray(sol["fit_degree"]).ravel()[0])
 
     out = resample_b_to_a(a_data, b_data, cx, cy, fit_degree)
 
-    out_fits = outdir / f"{args.b.stem}_on_{args.a.stem}_from_stars_poly{fit_degree}.fits"
     fits.writeto(out_fits, out, a_header, overwrite=True)
 
-    preview_png = outdir / f"{args.b.stem}_on_{args.a.stem}_from_stars_poly{fit_degree}_preview.png"
     save_png(out, preview_png, "Direct fit from stars: B -> A")
 
     absdiff = np.abs(np.nan_to_num(a_data, nan=0.0) - np.nan_to_num(out, nan=0.0))
-    absdiff_png = outdir / f"{args.b.stem}_on_{args.a.stem}_absdiff_from_stars_poly{fit_degree}.png"
     save_png(absdiff, absdiff_png, "Abs diff |A - B_from_stars|")
 
     # Visualize selected matched stars and point-cloud shape.

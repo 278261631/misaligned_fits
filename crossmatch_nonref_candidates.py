@@ -64,6 +64,11 @@ def parse_args():
         help="Reference FITS used to convert matched RA/DEC back to pixel x/y.",
     )
     parser.add_argument("--timeout-sec", type=float, default=8.0, help="HTTP timeout in seconds.")
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite outputs; default skips when all expected outputs already exist.",
+    )
     return parser.parse_args()
 
 
@@ -259,6 +264,13 @@ def main():
     out_var = args.find_variable_csv if args.find_variable_csv is not None else input_csv.with_name("find_variable.csv")
     out_mpc = args.find_mpc_csv if args.find_mpc_csv is not None else input_csv.with_name("find_mpc.csv")
     out_match_png = input_csv.with_name("variable_candidates_rank_aligned_to_a_match.png")
+    expected_outputs = [out_hip, out_var, out_mpc, out_match_png]
+    if (not args.overwrite) and all(p.exists() for p in expected_outputs):
+        print("SKIP crossmatch_nonref_candidates.py: outputs already exist (use --overwrite to regenerate)")
+        for p in expected_outputs:
+            print(f"EXISTS {p}")
+        return
+
     ref_fits_path = resolve_ref_fits_path(args.ref_fits, input_csv)
     ref_wcs, ref_wcs_path = load_reference_wcs(args.ref_fits, input_csv)
     if ref_wcs is None:

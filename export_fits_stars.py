@@ -76,6 +76,11 @@ def parse_args():
         default=20.0,
         help="Percentile-based lower bound for exported star flux (0-100, default: 20).",
     )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite outputs; default skips when all expected outputs already exist.",
+    )
     return parser.parse_args()
 
 
@@ -243,6 +248,18 @@ def main():
     fits_path = args.fits
     out_path = args.out if args.out is not None else fits_path.with_suffix(".stars.npz")
     out_all_path = args.out_all if args.out_all is not None else out_path.with_name(f"{out_path.stem}.all.npz")
+    expected_outputs = [out_path, out_all_path]
+    if args.out_valid_region is not None:
+        expected_outputs.append(args.out_valid_region)
+    if args.out_valid_region_png is not None:
+        expected_outputs.append(args.out_valid_region_png)
+    if args.out_all_png is not None:
+        expected_outputs.append(args.out_all_png)
+    if (not args.overwrite) and all(p.exists() for p in expected_outputs):
+        print("SKIP export_fits_stars.py: outputs already exist (use --overwrite to regenerate)")
+        for p in expected_outputs:
+            print(f"EXISTS {p}")
+        return
 
     data = fits.getdata(fits_path).astype(float)
     valid_mask = np.isfinite(data) & (data != 0.0)

@@ -82,6 +82,11 @@ def parse_args():
         action="store_true",
         help="Skip median filtering and reproject raw B data directly.",
     )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite outputs; default skips when all expected outputs already exist.",
+    )
     return parser.parse_args()
 
 
@@ -189,6 +194,19 @@ def export_all_stars_png(
 
 def main():
     args = parse_args()
+    out_stars_all = (
+        args.out_stars_all
+        if args.out_stars_all is not None
+        else args.out_stars.with_name(f"{args.out_stars.stem}.all.npz")
+    )
+    expected_outputs = [args.out_fits, args.out_stars, out_stars_all]
+    if args.out_stars_all_png is not None:
+        expected_outputs.append(args.out_stars_all_png)
+    if (not args.overwrite) and all(p.exists() for p in expected_outputs):
+        print("SKIP reproject_wcs_and_export_stars.py: outputs already exist (use --overwrite to regenerate)")
+        for p in expected_outputs:
+            print(f"EXISTS {p}")
+        return
 
     a_data = fits.getdata(args.a).astype(float)
     b_data = fits.getdata(args.b).astype(float)
@@ -203,12 +221,6 @@ def main():
     else:
         b_input = median_filter(b_data, size=int(args.median_size))
     out = reproject_b_to_a_wcs(a_data, b_input, wcs_a, wcs_b, chunk_rows=args.chunk_rows)
-    out_stars_all = (
-        args.out_stars_all
-        if args.out_stars_all is not None
-        else args.out_stars.with_name(f"{args.out_stars.stem}.all.npz")
-    )
-
     args.out_fits.parent.mkdir(parents=True, exist_ok=True)
     args.out_stars.parent.mkdir(parents=True, exist_ok=True)
     out_stars_all.parent.mkdir(parents=True, exist_ok=True)

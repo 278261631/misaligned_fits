@@ -48,6 +48,11 @@ def parse_args():
         action="store_true",
         help="Disable grid-balanced down-selection of matched pairs.",
     )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite output; default skips when output already exists.",
+    )
     return parser.parse_args()
 
 
@@ -97,6 +102,11 @@ def _select_balanced_matches(xy_a, ai_idx, bi_idx, dist, h, w, grid_x, grid_y, p
 
 def main():
     args = parse_args()
+    if (not args.overwrite) and args.out.exists():
+        print("SKIP solve_alignment_from_stars.py: output already exists (use --overwrite to regenerate)")
+        print(f"EXISTS {args.out}")
+        return
+
     a = np.load(args.a_stars, allow_pickle=True)
     b = np.load(args.b_stars, allow_pickle=True)
     xy_a = np.asarray(a["xy"], dtype=float)

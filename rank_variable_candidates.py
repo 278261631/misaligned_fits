@@ -153,6 +153,11 @@ def parse_args():
         default=None,
         help="Optional run_id used when writing timing events (default: MISALIGNED_FITS_RUN_ID or auto-generated).",
     )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite outputs; default skips when all expected outputs already exist.",
+    )
     return parser.parse_args()
 
 
@@ -785,6 +790,24 @@ def main():
     out_overlap_expr_png = args.out_overlap_expr_png if args.out_overlap_expr_png is not None else None
     out_png = args.out_png if args.out_png is not None else (base / "variable_candidates_rank.png")
     out_png_aligned = out_png.with_name(f"{out_png.stem}_aligned_to_a{out_png.suffix}")
+    expected_outputs = [
+        out_csv,
+        out_csv_nonref,
+        out_csv_ref_missing,
+        out_csv_nonref_inner_border,
+        out_csv_nonref_inner_border_pre_knee,
+        out_overlap_expr,
+        out_png,
+        out_png_aligned,
+    ]
+    if out_overlap_expr_png is not None:
+        expected_outputs.append(out_overlap_expr_png)
+    if (not args.overwrite) and all(p.exists() for p in expected_outputs):
+        print("SKIP rank_variable_candidates.py: outputs already exist (use --overwrite to regenerate)")
+        for p in expected_outputs:
+            print(f"EXISTS {p}")
+        return
+
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     out_csv_nonref.parent.mkdir(parents=True, exist_ok=True)
     out_csv_ref_missing.parent.mkdir(parents=True, exist_ok=True)

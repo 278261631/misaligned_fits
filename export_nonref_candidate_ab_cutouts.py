@@ -81,6 +81,11 @@ def parse_args():
         default=None,
         help="Output path for timing summary PNG (default: <out_dir>/timing_summary.png).",
     )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite outputs; default skips when cutout outputs already exist.",
+    )
     return parser.parse_args()
 
 
@@ -295,6 +300,15 @@ def main():
         out_dir = args.out_dir if args.out_dir is not None else (input_csv.parent / "output")
         out_dir = resolve_path(input_csv, out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
+        timing_plot_path = (
+            resolve_path(input_csv, args.timing_plot) if args.timing_plot is not None else (out_dir / "timing_summary.png")
+        )
+        existing_cutouts = list(out_dir.glob("rank_*_ab.png"))
+        if (not args.overwrite) and len(existing_cutouts) > 0 and timing_plot_path.exists():
+            print("SKIP export_nonref_candidate_ab_cutouts.py: outputs already exist (use --overwrite to regenerate)")
+            print(f"EXISTS {timing_plot_path}")
+            print(f"EXISTS cutouts={len(existing_cutouts)} in {out_dir}")
+            return
 
         a_fits = resolve_path(input_csv, args.a_fits)
         b_fits = resolve_path(input_csv, args.b_fits)
@@ -440,9 +454,6 @@ def main():
             meta={"rows_total": len(rows), "rows_exported": n_ok, "rows_skipped": n_skipped},
         )
 
-        timing_plot_path = (
-            resolve_path(input_csv, args.timing_plot) if args.timing_plot is not None else (out_dir / "timing_summary.png")
-        )
         filter_run_id = args.timing_filter_run_id if args.timing_filter_run_id else args.timing_run_id
         with logger.step("plot_timing_summary", meta={"filter_run_id": filter_run_id or "ALL"}):
             events = load_timing_events(timing_path, run_id=filter_run_id)

@@ -13,7 +13,8 @@ python "D:/github/misaligned_fits/export_fits_stars.py" ^
     --out-all "D:/missalign/gy2_K043-7.stars.all.npz" ^
     --min-flux %EXPORT_MIN_FLUX% --min-flux-percentile %EXPORT_MIN_FLUX_PERCENTILE% ^
     --uniform-grid-x 7 --uniform-grid-y 7 --uniform-per-cell 100 ^
-    --out-all-png "D:/missalign/gy2_K043-7.stars.all.png"
+    --out-all-png "D:/missalign/gy2_K043-7.stars.all.png" ^
+    --overwrite
 
 python "D:/github/fits_data_view_process_3d/std_process/recommended_pipeline_console.py" ^
     -i "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_.fit" ^
@@ -29,20 +30,23 @@ python "D:\github\misaligned_fits\reproject_wcs_and_export_stars.py" ^
     --out-stars-all-png "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_.rp.stars.all.png" ^
     --min-flux %REPROJECT_MIN_FLUX% --min-flux-percentile %REPROJECT_MIN_FLUX_PERCENTILE% ^
     --skip-median-filter --max-stars "5000" ^
-    --uniform-grid-x 7 --uniform-grid-y 7 --uniform-per-cell 100
+    --uniform-grid-x 7 --uniform-grid-y 7 --uniform-per-cell 100 ^
+    --overwrite
 
 
 python "D:\github\misaligned_fits\solve_alignment_from_stars.py" ^
     --a-stars "D:/missalign/gy2_K043-7.stars.npz" ^
     --b-stars "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_.rp.stars.npz" ^
     --out "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_.rp.align.npz" ^
-    --radii 24 32 40
+    --radii 24 32 40 ^
+    --overwrite
 
 python "D:\github\misaligned_fits\render_alignment_outputs.py" ^
     --a "D:/missalign/gy2_K043-7.fits" ^
     --b "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_.02rp.fit" ^
     --align "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_.rp.align.npz" ^
-    --outdir "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_/"
+    --outdir "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_/" ^
+    --overwrite
 
 python "D:\github\misaligned_fits\rank_variable_candidates.py" ^
     --ref-stars-all "D:/missalign/gy2_K043-7.stars.all.npz" ^
@@ -57,7 +61,8 @@ python "D:\github\misaligned_fits\rank_variable_candidates.py" ^
     --out-overlap-expr-png "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_/ref_target_overlap_polygon_expr.png" ^
     --out-csv-nonref-inner-border "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_/variable_candidates_nonref_only_inner_border.csv" ^
     --out-csv-nonref-inner-border-pre-knee "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_/variable_candidates_nonref_only_inner_border_pre_knee.csv" ^
-    --min-observations 2 --nonref-ref-check-radius 10
+    --min-observations 2 --nonref-ref-check-radius 10 ^
+    --overwrite
 
     // --out-png "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_/variable_candidates_rank.png" ^
 
@@ -66,7 +71,8 @@ python "D:/github/misaligned_fits/crossmatch_nonref_candidates.py" ^
     --find-hip-csv "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_/find_hip.csv" ^
     --find-variable-csv "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_/find_variable.csv" ^
     --find-mpc-csv "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_/find_mpc.csv" ^
-    --ref-fits "D:/missalign/gy2_K043-7.fits"
+    --ref-fits "D:/missalign/gy2_K043-7.fits" ^
+    --overwrite
 
 python "D:/github/misaligned_fits/export_nonref_candidate_ab_cutouts.py" ^
     --input-csv "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_/variable_candidates_nonref_only_inner_border.csv" ^
@@ -75,7 +81,8 @@ python "D:/github/misaligned_fits/export_nonref_candidate_ab_cutouts.py" ^
     --a-stars-all "D:/missalign/gy2_K043-7.stars.all.npz" ^
     --b-stars-all "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_.rp.stars.all.npz" ^
     --align-npz "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_.rp.align.npz" ^
-    --cutout-size 128
+    --cutout-size 128 ^
+    --overwrite
 
 
 
