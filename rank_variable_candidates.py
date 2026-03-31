@@ -56,6 +56,16 @@ def parse_args():
         help="Output CSV for nonref inner-border stars before flux-threshold/top-k truncation (still excludes ref-nearby points).",
     )
     parser.add_argument(
+        "--csv-detail",
+        "--csv_detail",
+        dest="csv_detail",
+        action="store_true",
+        help=(
+            "Enable detailed CSV outputs. When disabled (default), skip writing "
+            "nonref_only and nonref_inner_border_pre_knee CSV files."
+        ),
+    )
+    parser.add_argument(
         "--out-overlap-expr",
         type=Path,
         default=None,
@@ -728,6 +738,7 @@ def save_candidate_overlay_exact(
 def main():
     args = parse_args()
     base = args.base if args.base is not None else Path(".")
+    csv_detail = bool(args.csv_detail)
     out_csv_nonref_inner_border_for_timing = (
         args.out_csv_nonref_inner_border
         if args.out_csv_nonref_inner_border is not None
@@ -801,15 +812,14 @@ def main():
     out_png = args.out_png if args.out_png is not None else (base / "variable_candidates_rank.png")
     out_png_aligned = out_png.with_name(f"{out_png.stem}_aligned_to_a{out_png.suffix}")
     expected_outputs = [
-        out_csv,
-        out_csv_nonref,
         out_csv_ref_missing,
         out_csv_nonref_inner_border,
-        out_csv_nonref_inner_border_pre_knee,
         out_overlap_expr,
         out_png,
         out_png_aligned,
     ]
+    if csv_detail:
+        expected_outputs.extend([out_csv, out_csv_nonref, out_csv_nonref_inner_border_pre_knee])
     if out_overlap_expr_png is not None:
         expected_outputs.append(out_overlap_expr_png)
     if (not args.overwrite) and all(p.exists() for p in expected_outputs):
@@ -818,11 +828,12 @@ def main():
             print(f"EXISTS {p}")
         return
 
-    out_csv.parent.mkdir(parents=True, exist_ok=True)
-    out_csv_nonref.parent.mkdir(parents=True, exist_ok=True)
     out_csv_ref_missing.parent.mkdir(parents=True, exist_ok=True)
     out_csv_nonref_inner_border.parent.mkdir(parents=True, exist_ok=True)
-    out_csv_nonref_inner_border_pre_knee.parent.mkdir(parents=True, exist_ok=True)
+    if csv_detail:
+        out_csv.parent.mkdir(parents=True, exist_ok=True)
+        out_csv_nonref.parent.mkdir(parents=True, exist_ok=True)
+        out_csv_nonref_inner_border_pre_knee.parent.mkdir(parents=True, exist_ok=True)
     out_overlap_expr.parent.mkdir(parents=True, exist_ok=True)
     if out_overlap_expr_png is not None:
         out_overlap_expr_png.parent.mkdir(parents=True, exist_ok=True)
@@ -1133,10 +1144,10 @@ def main():
     med_flux = np.nanmedian(flux_mat, axis=1)
     ref_region_ok = np.ones(n_ref, dtype=bool)
     if ref_valid_region_paths is not None:
-        ref_region_ok = np.array(
-            [point_in_any_region(xy_ref[i, 0], xy_ref[i, 1], ref_valid_region_paths) for i in range(n_ref)],
-            dtype=bool,
-        )
+        # Batch point-in-polygon checks to avoid Python per-star loops.
+        ref_region_ok = np.zeros(n_ref, dtype=bool)
+        for path_obj in ref_valid_region_paths:
+            ref_region_ok |= path_obj.contains_points(xy_ref, radius=1e-9)
     logger.write_event(
         "rank_build_flux_matrix_and_region_mask",
         (time.perf_counter() - t_rank_stage) * 1000.0,
@@ -1160,7 +1171,9 @@ def main():
 
     t_rank_stage = time.perf_counter()
     rel = flux_mat / np.maximum(med_flux[:, None], 1e-12)
-    mad_rel = np.array([robust_mad(row[np.isfinite(row)]) for row in rel], dtype=np.float64)
+    # Vectorized robust MAD per star (ignore NaN values from missing observations).
+    rel_med = np.nanmedian(rel, axis=1)
+    mad_rel = 1.4826 * np.nanmedian(np.abs(rel - rel_med[:, None]), axis=1)
     p95 = np.nanpercentile(rel, 95, axis=1)
     p05 = np.nanpercentile(rel, 5, axis=1)
     amp_rel = p95 - p05
@@ -1184,42 +1197,43 @@ def main():
     )
 
     t_rank_stage = time.perf_counter()
-    with out_csv.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(
-            [
-                "rank",
-                "x",
-                "y",
-                "variability_score",
-                "mad_rel",
-                "amp_rel_p95_p05",
-                "n_observations",
-                "median_flux_norm",
-            ]
-        )
-        for r, i in enumerate(order, start=1):
+    if csv_detail:
+        with out_csv.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
             writer.writerow(
                 [
-                    r,
-                    f"{xy_ref[i, 0]:.4f}",
-                    f"{xy_ref[i, 1]:.4f}",
-                    f"{score[i]:.8f}",
-                    f"{mad_rel[i]:.8f}",
-                    f"{amp_rel[i]:.8f}",
-                    int(n_obs[i]),
-                    f"{med_flux[i]:.8f}",
+                    "rank",
+                    "x",
+                    "y",
+                    "variability_score",
+                    "mad_rel",
+                    "amp_rel_p95_p05",
+                    "n_observations",
+                    "median_flux_norm",
                 ]
             )
+            for r, i in enumerate(order, start=1):
+                writer.writerow(
+                    [
+                        r,
+                        f"{xy_ref[i, 0]:.4f}",
+                        f"{xy_ref[i, 1]:.4f}",
+                        f"{score[i]:.8f}",
+                        f"{mad_rel[i]:.8f}",
+                        f"{amp_rel[i]:.8f}",
+                        int(n_obs[i]),
+                        f"{med_flux[i]:.8f}",
+                    ]
+                )
     logger.write_event(
         "rank_write_csv",
         (time.perf_counter() - t_rank_stage) * 1000.0,
-        meta={"rows_written": int(len(order))},
+        meta={"rows_written": int(len(order)) if csv_detail else 0, "csv_detail": int(csv_detail)},
     )
     logger.write_event(
         "compute_scores_and_write_rank_csv",
         (time.perf_counter() - t_rank_core) * 1000.0,
-        meta={"ranked_candidates": int(len(order))},
+        meta={"ranked_candidates": int(len(order)), "csv_detail": int(csv_detail), "wrote_rank_csv": int(csv_detail)},
     )
 
     t_nonref_outputs = time.perf_counter()
@@ -1249,32 +1263,33 @@ def main():
             )
             nonref_inside[i] = inside_overlap
 
-        with out_csv_nonref.open("w", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow(
-                [
-                    "rank",
-                    "x",
-                    "y",
-                    "n_frames_detected",
-                    "n_detections",
-                    "median_flux_norm",
-                    "frames",
-                ]
-            )
-            for r, i in enumerate(nonref_order, start=1):
-                frame_names = ";".join(sorted(nonref_frame_sets[i]))
+        if csv_detail:
+            with out_csv_nonref.open("w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
                 writer.writerow(
                     [
-                        r,
-                        f"{nonref_xy_arr[i, 0]:.4f}",
-                        f"{nonref_xy_arr[i, 1]:.4f}",
-                        int(nonref_n_frames[i]),
-                        int(nonref_n_det[i]),
-                        f"{nonref_median_flux[i]:.8f}",
-                        frame_names,
+                        "rank",
+                        "x",
+                        "y",
+                        "n_frames_detected",
+                        "n_detections",
+                        "median_flux_norm",
+                        "frames",
                     ]
                 )
+                for r, i in enumerate(nonref_order, start=1):
+                    frame_names = ";".join(sorted(nonref_frame_sets[i]))
+                    writer.writerow(
+                        [
+                            r,
+                            f"{nonref_xy_arr[i, 0]:.4f}",
+                            f"{nonref_xy_arr[i, 1]:.4f}",
+                            int(nonref_n_frames[i]),
+                            int(nonref_n_det[i]),
+                            f"{nonref_median_flux[i]:.8f}",
+                            frame_names,
+                        ]
+                    )
 
         nonref_inner_border_header = [
             "rank",
@@ -1326,52 +1341,53 @@ def main():
             final_rank_by_idx[i] = rank_inner
             rank_inner += 1
 
-        with out_csv_nonref_inner_border_pre_knee.open("w", newline="", encoding="utf-8") as f_pre:
-            writer_pre = csv.writer(f_pre)
-            writer_pre.writerow(nonref_inner_border_pre_knee_header)
-            rank_pre = 1
-            for i in nonref_order:
-                if not nonref_inside[i]:
-                    continue
-                frame_names = ";".join(sorted(nonref_frame_sets[i]))
-                nearest_ref_dist = float(nearest_dist_all[i])
-                has_ref_nearby = bool(has_ref_nearby_all[i])
-                # Pre-filter CSV still excludes points near reference stars (definition A).
-                if has_ref_nearby:
-                    continue
-                if ref_wcs is not None:
-                    try:
-                        ra_deg, dec_deg = ref_wcs.pixel_to_world_values(
-                            float(nonref_xy_arr[i, 0]),
-                            float(nonref_xy_arr[i, 1]),
-                        )
-                    except Exception:
+        if csv_detail:
+            with out_csv_nonref_inner_border_pre_knee.open("w", newline="", encoding="utf-8") as f_pre:
+                writer_pre = csv.writer(f_pre)
+                writer_pre.writerow(nonref_inner_border_pre_knee_header)
+                rank_pre = 1
+                for i in nonref_order:
+                    if not nonref_inside[i]:
+                        continue
+                    frame_names = ";".join(sorted(nonref_frame_sets[i]))
+                    nearest_ref_dist = float(nearest_dist_all[i])
+                    has_ref_nearby = bool(has_ref_nearby_all[i])
+                    # Pre-filter CSV still excludes points near reference stars (definition A).
+                    if has_ref_nearby:
+                        continue
+                    if ref_wcs is not None:
+                        try:
+                            ra_deg, dec_deg = ref_wcs.pixel_to_world_values(
+                                float(nonref_xy_arr[i, 0]),
+                                float(nonref_xy_arr[i, 1]),
+                            )
+                        except Exception:
+                            ra_deg, dec_deg = float("nan"), float("nan")
+                    else:
                         ra_deg, dec_deg = float("nan"), float("nan")
-                else:
-                    ra_deg, dec_deg = float("nan"), float("nan")
-                writer_pre.writerow(
-                    [
-                        rank_pre,
-                        f"{nonref_xy_arr[i, 0]:.4f}",
-                        f"{nonref_xy_arr[i, 1]:.4f}",
-                        int(nonref_n_frames[i]),
-                        int(nonref_n_det[i]),
-                        f"{nonref_median_flux[i]:.8f}",
-                        frame_names,
-                        int(has_ref_nearby),
-                        int(not has_ref_nearby),
-                        f"{nearest_ref_dist:.6f}" if np.isfinite(nearest_ref_dist) else "",
-                        f"{float(ra_deg):.8f}" if np.isfinite(ra_deg) else "",
-                        f"{float(dec_deg):.8f}" if np.isfinite(dec_deg) else "",
-                        f"{arcsec_per_px_x:.8f}" if np.isfinite(arcsec_per_px_x) else "",
-                        f"{arcsec_per_px_y:.8f}" if np.isfinite(arcsec_per_px_y) else "",
-                        f"{arcsec_per_px_mean:.8f}" if np.isfinite(arcsec_per_px_mean) else "",
-                        f"{ref_mjd:.8f}" if np.isfinite(ref_mjd) else "",
-                        int(kept_in_inner_border_csv[i]),
-                        str(drop_reason_after_pre_knee[i]),
-                    ]
-                )
-                rank_pre += 1
+                    writer_pre.writerow(
+                        [
+                            rank_pre,
+                            f"{nonref_xy_arr[i, 0]:.4f}",
+                            f"{nonref_xy_arr[i, 1]:.4f}",
+                            int(nonref_n_frames[i]),
+                            int(nonref_n_det[i]),
+                            f"{nonref_median_flux[i]:.8f}",
+                            frame_names,
+                            int(has_ref_nearby),
+                            int(not has_ref_nearby),
+                            f"{nearest_ref_dist:.6f}" if np.isfinite(nearest_ref_dist) else "",
+                            f"{float(ra_deg):.8f}" if np.isfinite(ra_deg) else "",
+                            f"{float(dec_deg):.8f}" if np.isfinite(dec_deg) else "",
+                            f"{arcsec_per_px_x:.8f}" if np.isfinite(arcsec_per_px_x) else "",
+                            f"{arcsec_per_px_y:.8f}" if np.isfinite(arcsec_per_px_y) else "",
+                            f"{arcsec_per_px_mean:.8f}" if np.isfinite(arcsec_per_px_mean) else "",
+                            f"{ref_mjd:.8f}" if np.isfinite(ref_mjd) else "",
+                            int(kept_in_inner_border_csv[i]),
+                            str(drop_reason_after_pre_knee[i]),
+                        ]
+                    )
+                    rank_pre += 1
 
         with out_csv_nonref_inner_border.open("w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
@@ -1423,22 +1439,23 @@ def main():
         nonref_has_ref_nearby_mask_rank = np.asarray(has_ref_nearby_all[rank_idx], dtype=bool)
         nonref_plot_ranks_rank = np.arange(1, keep_n_rank + 1, dtype=np.int32)
     else:
-        with out_csv_nonref.open("w", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow(
-                [
-                    "rank",
-                    "x",
-                    "y",
-                    "n_frames_detected",
-                    "n_detections",
-                    "median_flux_norm",
-                    "frames",
-                    "has_ref_nearby",
-                    "is_nonref_unique_vs_ref_all",
-                    "nearest_ref_dist_px",
-                ]
-            )
+        if csv_detail:
+            with out_csv_nonref.open("w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(
+                    [
+                        "rank",
+                        "x",
+                        "y",
+                        "n_frames_detected",
+                        "n_detections",
+                        "median_flux_norm",
+                        "frames",
+                        "has_ref_nearby",
+                        "is_nonref_unique_vs_ref_all",
+                        "nearest_ref_dist_px",
+                    ]
+                )
         with out_csv_nonref_inner_border.open("w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             writer.writerow(
@@ -1461,34 +1478,35 @@ def main():
                     "mjd",
                 ]
             )
-        with out_csv_nonref_inner_border_pre_knee.open("w", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow(
-                [
-                    "rank",
-                    "x",
-                    "y",
-                    "n_frames_detected",
-                    "n_detections",
-                    "median_flux_norm",
-                    "frames",
-                    "has_ref_nearby",
-                    "is_nonref_unique_vs_ref_all",
-                    "nearest_ref_dist_px",
-                    "ra_deg",
-                    "dec_deg",
-                    "arcsec_per_px_x",
-                    "arcsec_per_px_y",
-                    "arcsec_per_px_mean",
-                    "mjd",
-                    "kept_in_inner_border_csv",
-                    "drop_reason_after_pre_knee",
-                ]
-            )
+        if csv_detail:
+            with out_csv_nonref_inner_border_pre_knee.open("w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(
+                    [
+                        "rank",
+                        "x",
+                        "y",
+                        "n_frames_detected",
+                        "n_detections",
+                        "median_flux_norm",
+                        "frames",
+                        "has_ref_nearby",
+                        "is_nonref_unique_vs_ref_all",
+                        "nearest_ref_dist_px",
+                        "ra_deg",
+                        "dec_deg",
+                        "arcsec_per_px_x",
+                        "arcsec_per_px_y",
+                        "arcsec_per_px_mean",
+                        "mjd",
+                        "kept_in_inner_border_csv",
+                        "drop_reason_after_pre_knee",
+                    ]
+                )
     logger.write_event(
         "write_nonref_outputs",
         (time.perf_counter() - t_nonref_outputs) * 1000.0,
-        meta={"nonref_count": int(nonref_count)},
+        meta={"nonref_count": int(nonref_count), "csv_detail": int(csv_detail)},
     )
 
     # Stars detected in reference but never matched in any successfully used target frame.
@@ -1623,10 +1641,19 @@ def main():
     print(f"Frames used: {len(used_files)}")
     print(f"Stars in reference: {n_ref}")
     print(f"Candidates ranked: {len(order)}")
-    print(f"WROTE {out_csv}")
-    print(f"WROTE {out_csv_nonref}")
+    if csv_detail:
+        print(f"WROTE {out_csv}")
+    else:
+        print(f"SKIP {out_csv} (csv_detail disabled)")
+    if csv_detail:
+        print(f"WROTE {out_csv_nonref}")
+    else:
+        print(f"SKIP {out_csv_nonref} (csv_detail disabled)")
     print(f"WROTE {out_csv_nonref_inner_border}")
-    print(f"WROTE {out_csv_nonref_inner_border_pre_knee}")
+    if csv_detail:
+        print(f"WROTE {out_csv_nonref_inner_border_pre_knee}")
+    else:
+        print(f"SKIP {out_csv_nonref_inner_border_pre_knee} (csv_detail disabled)")
     print(f"WROTE {out_csv_ref_missing}")
     print(f"WROTE {out_overlap_expr}")
     if out_overlap_expr_png is not None:
