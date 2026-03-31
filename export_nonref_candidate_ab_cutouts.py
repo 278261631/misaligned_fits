@@ -360,8 +360,27 @@ def main():
             ax_a.imshow(a_view, origin="lower", cmap="gray", norm=a_norm, interpolation="nearest")
             ax_b.imshow(b_view, origin="lower", cmap="gray", norm=b_norm, interpolation="nearest")
 
-            ax_a.scatter([float(x) - a_x0], [float(y) - a_y0], marker="+", s=70, c="#FFD400", linewidths=1.2)
-            ax_b.scatter([float(bx) - b_x0], [float(by) - b_y0], marker="+", s=70, c="#FFD400", linewidths=1.2)
+            # Use a hollow plus marker with a larger inner void for better visibility.
+            ax_a.plot(
+                [float(x) - a_x0],
+                [float(y) - a_y0],
+                linestyle="None",
+                marker="P",
+                markersize=11,
+                markerfacecolor="none",
+                markeredgecolor="#FFD400",
+                markeredgewidth=1.0,
+            )
+            ax_b.plot(
+                [float(bx) - b_x0],
+                [float(by) - b_y0],
+                linestyle="None",
+                marker="P",
+                markersize=11,
+                markerfacecolor="none",
+                markeredgecolor="#FFD400",
+                markeredgewidth=1.0,
+            )
 
             if len(a_pts) > 0:
                 ax_a.scatter(
