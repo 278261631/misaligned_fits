@@ -8,7 +8,6 @@ from astropy.wcs import WCS
 from scipy.ndimage import map_coordinates, median_filter
 
 from alignment_common import detect_stars, select_stars_uniform_grid
-from timing_logger import run_script_with_timing
 
 
 def parse_args():
@@ -339,4 +338,4 @@ def main():
 
 
 if __name__ == "__main__":
-    run_script_with_timing(main, script_name=Path(__file__).name)
+    main()

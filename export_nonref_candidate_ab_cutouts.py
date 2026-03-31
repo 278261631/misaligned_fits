@@ -2,7 +2,6 @@ from pathlib import Path
 import argparse
 import csv
 import json
-import time
 from collections import defaultdict
 
 import matplotlib.pyplot as plt
@@ -11,7 +10,6 @@ from astropy.io import fits
 from astropy.visualization import ImageNormalize, PercentileInterval, SqrtStretch
 
 from alignment_common import eval_poly
-from timing_logger import TimingLogger, resolve_timing_path
 
 
 def parse_args():
@@ -61,19 +59,7 @@ def parse_args():
         "--timing-jsonl",
         type=Path,
         default=None,
-        help="Optional timing JSONL path (default: output/timing.jsonl or MISALIGNED_FITS_TIMING_PATH).",
-    )
-    parser.add_argument(
-        "--timing-run-id",
-        type=str,
-        default=None,
-        help="Optional run_id used when writing timing events (default: MISALIGNED_FITS_RUN_ID or auto-generated).",
-    )
-    parser.add_argument(
-        "--timing-filter-run-id",
-        type=str,
-        default=None,
-        help="Filter run_id used when drawing timing summary; default follows --timing-run-id when provided.",
+        help="Optional timing JSONL path (default: <input_csv_dir>/timing.jsonl).",
     )
     parser.add_argument(
         "--timing-plot",
@@ -204,7 +190,7 @@ def annotate_star_flux(ax, points, flux, top_n):
         )
 
 
-def load_timing_events(path: Path, run_id: str | None = None):
+def load_timing_events(path: Path, run_id: str | None = None, script: str | None = None):
     if not path.exists():
         return []
     events = []
@@ -218,6 +204,8 @@ def load_timing_events(path: Path, run_id: str | None = None):
             except Exception:
                 continue
             if run_id is not None and str(item.get("run_id", "")) != str(run_id):
+                continue
+            if script is not None and str(item.get("script", "")) != str(script):
                 continue
             duration_ms = parse_float(item.get("duration_ms"))
             if duration_ms is None:
@@ -282,79 +270,61 @@ def save_timing_summary_png(events, out_png: Path):
 
 def main():
     args = parse_args()
-    timing_path = resolve_timing_path(args.timing_jsonl)
-    logger = TimingLogger(
-        script=Path(__file__).name,
-        timing_path=timing_path,
-        run_id=args.timing_run_id,
-    )
-    t_script0 = time.perf_counter()
+    input_csv = args.input_csv
     n_ok = 0
     n_skipped = 0
+    if not input_csv.exists():
+        raise RuntimeError(f"Input CSV not found: {input_csv}")
 
-    try:
-        input_csv = args.input_csv
-        if not input_csv.exists():
-            raise RuntimeError(f"Input CSV not found: {input_csv}")
+    out_dir = args.out_dir if args.out_dir is not None else (input_csv.parent / "output")
+    out_dir = resolve_path(input_csv, out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    timing_plot_path = resolve_path(input_csv, args.timing_plot) if args.timing_plot is not None else (out_dir / "timing_summary.png")
+    timing_path = resolve_path(input_csv, args.timing_jsonl) if args.timing_jsonl is not None else (input_csv.parent / "timing.jsonl")
+    existing_cutouts = list(out_dir.glob("rank_*_ab.png"))
+    if (not args.overwrite) and len(existing_cutouts) > 0 and timing_plot_path.exists():
+        print("SKIP export_nonref_candidate_ab_cutouts.py: outputs already exist (use --overwrite to regenerate)")
+        print(f"EXISTS {timing_plot_path}")
+        print(f"EXISTS cutouts={len(existing_cutouts)} in {out_dir}")
+        return
 
-        out_dir = args.out_dir if args.out_dir is not None else (input_csv.parent / "output")
-        out_dir = resolve_path(input_csv, out_dir)
-        out_dir.mkdir(parents=True, exist_ok=True)
-        timing_plot_path = (
-            resolve_path(input_csv, args.timing_plot) if args.timing_plot is not None else (out_dir / "timing_summary.png")
-        )
-        existing_cutouts = list(out_dir.glob("rank_*_ab.png"))
-        if (not args.overwrite) and len(existing_cutouts) > 0 and timing_plot_path.exists():
-            print("SKIP export_nonref_candidate_ab_cutouts.py: outputs already exist (use --overwrite to regenerate)")
-            print(f"EXISTS {timing_plot_path}")
-            print(f"EXISTS cutouts={len(existing_cutouts)} in {out_dir}")
-            return
+    a_fits = resolve_path(input_csv, args.a_fits)
+    b_fits = resolve_path(input_csv, args.b_fits)
+    a_stars_all = resolve_path(input_csv, args.a_stars_all)
+    b_stars_all = resolve_path(input_csv, args.b_stars_all)
+    align_npz = resolve_path(input_csv, args.align_npz) if args.align_npz is not None else None
 
-        a_fits = resolve_path(input_csv, args.a_fits)
-        b_fits = resolve_path(input_csv, args.b_fits)
-        a_stars_all = resolve_path(input_csv, args.a_stars_all)
-        b_stars_all = resolve_path(input_csv, args.b_stars_all)
-        align_npz = resolve_path(input_csv, args.align_npz) if args.align_npz is not None else None
+    if a_fits is None or not a_fits.exists():
+        raise RuntimeError(f"A FITS not found: {a_fits}")
+    if b_fits is None or not b_fits.exists():
+        raise RuntimeError(f"B FITS not found: {b_fits}")
+    if a_stars_all is None or not a_stars_all.exists():
+        raise RuntimeError(f"A stars.all NPZ not found: {a_stars_all}")
+    if b_stars_all is None or not b_stars_all.exists():
+        raise RuntimeError(f"B stars.all NPZ not found: {b_stars_all}")
+    if (not bool(args.b_aligned_to_a)) and align_npz is None:
+        raise RuntimeError("Need --align-npz unless --b-aligned-to-a is set.")
+    if align_npz is not None and (not align_npz.exists()):
+        raise RuntimeError(f"Align NPZ not found: {align_npz}")
 
-        if a_fits is None or not a_fits.exists():
-            raise RuntimeError(f"A FITS not found: {a_fits}")
-        if b_fits is None or not b_fits.exists():
-            raise RuntimeError(f"B FITS not found: {b_fits}")
-        if a_stars_all is None or not a_stars_all.exists():
-            raise RuntimeError(f"A stars.all NPZ not found: {a_stars_all}")
-        if b_stars_all is None or not b_stars_all.exists():
-            raise RuntimeError(f"B stars.all NPZ not found: {b_stars_all}")
-        if (not bool(args.b_aligned_to_a)) and align_npz is None:
-            raise RuntimeError("Need --align-npz unless --b-aligned-to-a is set.")
-        if align_npz is not None and (not align_npz.exists()):
-            raise RuntimeError(f"Align NPZ not found: {align_npz}")
+    cutout_size = int(args.cutout_size)
+    if cutout_size <= 0:
+        raise RuntimeError("--cutout-size must be > 0.")
 
-        cutout_size = int(args.cutout_size)
-        if cutout_size <= 0:
-            raise RuntimeError("--cutout-size must be > 0.")
-        logger.write_event(
-            "prepare_paths_and_args",
-            (time.perf_counter() - t_script0) * 1000.0,
-            meta={"cutout_size": cutout_size},
-        )
+    a_img = fits.getdata(a_fits).astype(np.float32)
+    b_img = fits.getdata(b_fits).astype(np.float32)
+    a_xy, a_flux = load_stars_npz(a_stars_all)
+    b_xy, b_flux = load_stars_npz(b_stars_all)
+    cx, cy, fit_degree = load_alignment(align_npz)
 
-        with logger.step("load_inputs"):
-            a_img = fits.getdata(a_fits).astype(np.float32)
-            b_img = fits.getdata(b_fits).astype(np.float32)
-            a_xy, a_flux = load_stars_npz(a_stars_all)
-            b_xy, b_flux = load_stars_npz(b_stars_all)
-            cx, cy, fit_degree = load_alignment(align_npz)
+    with input_csv.open("r", newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
 
-        with logger.step("read_candidate_csv"):
-            with input_csv.open("r", newline="", encoding="utf-8") as f:
-                reader = csv.DictReader(f)
-                rows = list(reader)
+    if int(args.max_rows) > 0:
+        rows = rows[: int(args.max_rows)]
 
-        if int(args.max_rows) > 0:
-            rows = rows[: int(args.max_rows)]
-
-        t_loop0 = time.perf_counter()
-        for row_idx, row in enumerate(rows, start=1):
+    for row_idx, row in enumerate(rows, start=1):
             rank_raw = row.get("rank", "")
             x = parse_float(row.get("x"))
             y = parse_float(row.get("y"))
@@ -448,48 +418,30 @@ def main():
             plt.close(fig)
             n_ok += 1
 
-        logger.write_event(
-            "export_ab_cutouts",
-            (time.perf_counter() - t_loop0) * 1000.0,
-            meta={"rows_total": len(rows), "rows_exported": n_ok, "rows_skipped": n_skipped},
-        )
+    events = load_timing_events(
+        timing_path,
+        run_id=None,
+        script="rank_variable_candidates.py",
+    )
+    wrote_plot = save_timing_summary_png(events, timing_plot_path)
 
-        filter_run_id = args.timing_filter_run_id if args.timing_filter_run_id else args.timing_run_id
-        with logger.step("plot_timing_summary", meta={"filter_run_id": filter_run_id or "ALL"}):
-            events = load_timing_events(timing_path, run_id=filter_run_id)
-            wrote_plot = save_timing_summary_png(events, timing_plot_path)
-
-        print(f"Input CSV: {input_csv}")
-        print(f"A FITS: {a_fits}")
-        print(f"B FITS: {b_fits}")
-        print(f"A stars.all: {a_stars_all}")
-        print(f"B stars.all: {b_stars_all}")
-        if bool(args.b_aligned_to_a):
-            print("B center source: same as A (--b-aligned-to-a)")
-        else:
-            print(f"B center source: align NPZ {align_npz}, fit_degree={fit_degree}")
-        print(f"cutout_size={cutout_size}")
-        print(f"timing_jsonl={timing_path}")
-        print(f"timing_run_id={logger.run_id}")
-        if wrote_plot:
-            print(f"WROTE {timing_plot_path}")
-        else:
-            print(f"SKIP timing summary PNG (no events matched): {timing_plot_path}")
-        print(f"WROTE DIR {out_dir}")
-        print(f"exported_png_count={n_ok}")
-        logger.write_event(
-            "script_total",
-            (time.perf_counter() - t_script0) * 1000.0,
-            meta={"rows_exported": n_ok, "rows_skipped": n_skipped},
-        )
-    except Exception as exc:
-        logger.write_event(
-            "script_total",
-            (time.perf_counter() - t_script0) * 1000.0,
-            status="error",
-            meta={"rows_exported": n_ok, "rows_skipped": n_skipped, "error": str(exc)},
-        )
-        raise
+    print(f"Input CSV: {input_csv}")
+    print(f"A FITS: {a_fits}")
+    print(f"B FITS: {b_fits}")
+    print(f"A stars.all: {a_stars_all}")
+    print(f"B stars.all: {b_stars_all}")
+    if bool(args.b_aligned_to_a):
+        print("B center source: same as A (--b-aligned-to-a)")
+    else:
+        print(f"B center source: align NPZ {align_npz}, fit_degree={fit_degree}")
+    print(f"cutout_size={cutout_size}")
+    print(f"timing_jsonl={timing_path}")
+    if wrote_plot:
+        print(f"WROTE {timing_plot_path}")
+    else:
+        print(f"SKIP timing summary PNG (no rank events matched): {timing_plot_path}")
+    print(f"WROTE DIR {out_dir}")
+    print(f"exported_png_count={n_ok}, skipped_rows={n_skipped}")
 
 
 if __name__ == "__main__":

@@ -15,7 +15,7 @@ from astropy.visualization import ImageNormalize, PercentileInterval, SqrtStretc
 from scipy.spatial import cKDTree
 
 from alignment_common import build_matches, detect_stars, estimate_translation_from_stars, eval_poly
-from timing_logger import TimingLogger, resolve_timing_path, run_script_with_timing
+from timing_logger import TimingLogger, run_script_with_timing
 
 
 def parse_args():
@@ -727,14 +727,24 @@ def save_candidate_overlay_exact(
 
 def main():
     args = parse_args()
-    timing_path = resolve_timing_path(args.timing_jsonl)
+    base = args.base if args.base is not None else Path(".")
+    out_csv_nonref_inner_border_for_timing = (
+        args.out_csv_nonref_inner_border
+        if args.out_csv_nonref_inner_border is not None
+        else (base / "variable_candidates_nonref_only_inner_border.csv")
+    )
+    timing_path = (
+        resolve_path(base, args.timing_jsonl)
+        if args.timing_jsonl is not None
+        else (out_csv_nonref_inner_border_for_timing.parent / "timing.jsonl")
+    )
+    timing_path.parent.mkdir(parents=True, exist_ok=True)
     logger = TimingLogger(
         script=Path(__file__).name,
         timing_path=timing_path,
         run_id=args.timing_run_id,
     )
     phase_t0 = time.perf_counter()
-    base = args.base if args.base is not None else Path(".")
     ref_stars_all_path = resolve_path(base, args.ref_stars_all) if args.ref_stars_all is not None else None
     npz_mode = (
         args.ref_stars_all is not None

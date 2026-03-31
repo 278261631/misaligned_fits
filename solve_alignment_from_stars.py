@@ -9,7 +9,6 @@ from alignment_common import (
     eval_poly,
     fit_with_fallback,
 )
-from timing_logger import run_script_with_timing
 
 
 def parse_args():
@@ -216,4 +215,4 @@ def main():
 
 
 if __name__ == "__main__":
-    run_script_with_timing(main, script_name=Path(__file__).name)
+    main()
