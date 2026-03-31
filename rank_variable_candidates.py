@@ -812,14 +812,13 @@ def main():
     out_png = args.out_png if args.out_png is not None else (base / "variable_candidates_rank.png")
     out_png_aligned = out_png.with_name(f"{out_png.stem}_aligned_to_a{out_png.suffix}")
     expected_outputs = [
-        out_csv_ref_missing,
         out_csv_nonref_inner_border,
         out_overlap_expr,
         out_png,
         out_png_aligned,
     ]
     if csv_detail:
-        expected_outputs.extend([out_csv, out_csv_nonref, out_csv_nonref_inner_border_pre_knee])
+        expected_outputs.extend([out_csv, out_csv_nonref, out_csv_nonref_inner_border_pre_knee, out_csv_ref_missing])
     if out_overlap_expr_png is not None:
         expected_outputs.append(out_overlap_expr_png)
     if (not args.overwrite) and all(p.exists() for p in expected_outputs):
@@ -828,12 +827,12 @@ def main():
             print(f"EXISTS {p}")
         return
 
-    out_csv_ref_missing.parent.mkdir(parents=True, exist_ok=True)
     out_csv_nonref_inner_border.parent.mkdir(parents=True, exist_ok=True)
     if csv_detail:
         out_csv.parent.mkdir(parents=True, exist_ok=True)
         out_csv_nonref.parent.mkdir(parents=True, exist_ok=True)
         out_csv_nonref_inner_border_pre_knee.parent.mkdir(parents=True, exist_ok=True)
+        out_csv_ref_missing.parent.mkdir(parents=True, exist_ok=True)
     out_overlap_expr.parent.mkdir(parents=True, exist_ok=True)
     if out_overlap_expr_png is not None:
         out_overlap_expr_png.parent.mkdir(parents=True, exist_ok=True)
@@ -1524,31 +1523,32 @@ def main():
     else:
         ref_missing_order = ref_missing_idx
 
-    with out_csv_ref_missing.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(
-            [
-                "rank",
-                "x",
-                "y",
-                "reference_flux",
-                "n_target_observations",
-                "n_used_target_frames",
-                "missing_in_all_used_targets",
-            ]
-        )
-        for r, i in enumerate(ref_missing_order, start=1):
+    if csv_detail:
+        with out_csv_ref_missing.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
             writer.writerow(
                 [
-                    r,
-                    f"{xy_ref[i, 0]:.4f}",
-                    f"{xy_ref[i, 1]:.4f}",
-                    f"{float(flux_ref[i]):.8f}",
-                    int(n_target_obs[i]),
-                    int(n_used_targets),
-                    1,
+                    "rank",
+                    "x",
+                    "y",
+                    "reference_flux",
+                    "n_target_observations",
+                    "n_used_target_frames",
+                    "missing_in_all_used_targets",
                 ]
             )
+            for r, i in enumerate(ref_missing_order, start=1):
+                writer.writerow(
+                    [
+                        r,
+                        f"{xy_ref[i, 0]:.4f}",
+                        f"{xy_ref[i, 1]:.4f}",
+                        f"{float(flux_ref[i]):.8f}",
+                        int(n_target_obs[i]),
+                        int(n_used_targets),
+                        1,
+                    ]
+                )
     if len(ref_missing_order) > 0:
         top_k_ref_missing = int(args.top_k_ref_missing)
         keep_m = len(ref_missing_order) if top_k_ref_missing <= 0 else min(top_k_ref_missing, len(ref_missing_order))
@@ -1559,7 +1559,7 @@ def main():
     logger.write_event(
         "write_ref_missing_outputs",
         (time.perf_counter() - t_ref_missing_outputs) * 1000.0,
-        meta={"ref_missing_count": int(len(ref_missing_order))},
+        meta={"ref_missing_count": int(len(ref_missing_order)), "csv_detail": int(csv_detail)},
     )
 
     t_overlap_write = time.perf_counter()
@@ -1654,7 +1654,10 @@ def main():
         print(f"WROTE {out_csv_nonref_inner_border_pre_knee}")
     else:
         print(f"SKIP {out_csv_nonref_inner_border_pre_knee} (csv_detail disabled)")
-    print(f"WROTE {out_csv_ref_missing}")
+    if csv_detail:
+        print(f"WROTE {out_csv_ref_missing}")
+    else:
+        print(f"SKIP {out_csv_ref_missing} (csv_detail disabled)")
     print(f"WROTE {out_overlap_expr}")
     if out_overlap_expr_png is not None:
         print(f"WROTE {out_overlap_expr_png}")
