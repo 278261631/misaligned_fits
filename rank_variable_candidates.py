@@ -2,6 +2,7 @@ from pathlib import Path
 import argparse
 import csv
 import json
+import time
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -14,7 +15,7 @@ from astropy.visualization import ImageNormalize, PercentileInterval, SqrtStretc
 from scipy.spatial import cKDTree
 
 from alignment_common import build_matches, detect_stars, estimate_translation_from_stars, eval_poly
-from timing_logger import run_script_with_timing
+from timing_logger import TimingLogger, resolve_timing_path, run_script_with_timing
 
 
 def parse_args():
@@ -139,6 +140,18 @@ def parse_args():
         type=float,
         default=10.0,
         help="Radius in pixels to check whether a nonref point already exists in ref-stars-all (<=0 disables).",
+    )
+    parser.add_argument(
+        "--timing-jsonl",
+        type=Path,
+        default=None,
+        help="Optional timing JSONL path (default: output/timing.jsonl or MISALIGNED_FITS_TIMING_PATH).",
+    )
+    parser.add_argument(
+        "--timing-run-id",
+        type=str,
+        default=None,
+        help="Optional run_id used when writing timing events (default: MISALIGNED_FITS_RUN_ID or auto-generated).",
     )
     return parser.parse_args()
 
@@ -709,6 +722,13 @@ def save_candidate_overlay_exact(
 
 def main():
     args = parse_args()
+    timing_path = resolve_timing_path(args.timing_jsonl)
+    logger = TimingLogger(
+        script=Path(__file__).name,
+        timing_path=timing_path,
+        run_id=args.timing_run_id,
+    )
+    phase_t0 = time.perf_counter()
     base = args.base if args.base is not None else Path(".")
     ref_stars_all_path = resolve_path(base, args.ref_stars_all) if args.ref_stars_all is not None else None
     npz_mode = (
@@ -730,7 +750,13 @@ def main():
         targets = [p for p in inputs if p != ref_path]
         if len(targets) == 0:
             raise RuntimeError("No target files found after selecting reference.")
+    logger.write_event(
+        "init_inputs_mode",
+        (time.perf_counter() - phase_t0) * 1000.0,
+        meta={"npz_mode": int(npz_mode)},
+    )
 
+    phase_t0 = time.perf_counter()
     out_csv = args.out_csv if args.out_csv is not None else (base / "variable_candidates_rank.csv")
     out_csv_nonref = (
         args.out_csv_nonref if args.out_csv_nonref is not None else (base / "variable_candidates_nonref_only.csv")
@@ -768,7 +794,9 @@ def main():
     if out_overlap_expr_png is not None:
         out_overlap_expr_png.parent.mkdir(parents=True, exist_ok=True)
     out_png.parent.mkdir(parents=True, exist_ok=True)
+    logger.write_event("prepare_output_paths", (time.perf_counter() - phase_t0) * 1000.0)
 
+    phase_t0 = time.perf_counter()
     ref_data = None
     ref_image_path = resolve_path(base, args.ref_image) if args.ref_image is not None else None
     ref_valid_region_path = resolve_path(base, args.ref_valid_region) if args.ref_valid_region is not None else None
@@ -814,7 +842,13 @@ def main():
             raise RuntimeError(f"No stars detected in reference: {ref_path}")
         if ref_data is None:
             ref_data = np.full(ref_detect_data.shape, 0.5, dtype=np.float32)
+    logger.write_event(
+        "load_reference",
+        (time.perf_counter() - phase_t0) * 1000.0,
+        meta={"ref_stars": int(len(xy_ref))},
+    )
 
+    phase_t0 = time.perf_counter()
     ref_wcs, ref_wcs_source = resolve_reference_celestial_wcs(base, ref_path, ref_stars_all_path)
     if ref_wcs is None:
         print("WARNING: Reference WCS not available, RA/DEC columns will be empty in nonref inner-border CSV.")
@@ -842,6 +876,15 @@ def main():
                 )
         except Exception:
             print("WARNING: Failed to estimate global plate scale from reference WCS.")
+    logger.write_event(
+        "resolve_reference_wcs_mjd_scale",
+        (time.perf_counter() - phase_t0) * 1000.0,
+        meta={
+            "has_wcs": int(ref_wcs is not None),
+            "has_mjd": int(np.isfinite(ref_mjd)),
+            "arcsec_per_px_mean": float(arcsec_per_px_mean) if np.isfinite(arcsec_per_px_mean) else None,
+        },
+    )
 
     n_ref = len(xy_ref)
     # First column uses reference flux as baseline.
@@ -864,8 +907,12 @@ def main():
         for p in targets:
             target_entries.append((None, None, p))
 
+    t_targets_total = time.perf_counter()
     for stars_npz_path, align_npz_path, p in target_entries:
+        frame_label = stars_npz_path.name if npz_mode else p.name
+        t_target_frame = time.perf_counter()
         try:
+            t_target_stage = time.perf_counter()
             if npz_mode:
                 xy_b, flux_b, tgt_meta = load_stars_npz(stars_npz_path, return_meta=True)
                 if len(xy_b) == 0:
@@ -890,7 +937,6 @@ def main():
                 else:
                     dx0 = float(np.nanmedian(xy_ref[ai_idx, 0] - xy_b[bi_idx, 0])) if len(ai_idx) > 0 else 0.0
                     dy0 = float(np.nanmedian(xy_ref[ai_idx, 1] - xy_b[bi_idx, 1])) if len(ai_idx) > 0 else 0.0
-                frame_label = stars_npz_path.name
             else:
                 data = fits.getdata(p).astype(float)
                 h_b, w_b = data.shape
@@ -900,10 +946,20 @@ def main():
 
                 dx0, dy0 = estimate_translation_from_stars(xy_ref, xy_b, top_n=300, bin_size=2.0)
                 ai_idx, bi_idx = build_matches(xy_ref, xy_b, dx0, dy0, match_radius=float(args.match_radius))
-                frame_label = p.name
+            logger.write_event(
+                "target_load_and_match",
+                (time.perf_counter() - t_target_stage) * 1000.0,
+                meta={
+                    "frame": frame_label,
+                    "mode": "npz" if npz_mode else "fits",
+                    "detected_stars": int(len(xy_b)),
+                    "matched_stars": int(len(ai_idx)),
+                },
+            )
             if len(ai_idx) < 10:
                 raise RuntimeError(f"Too few matches ({len(ai_idx)}).")
 
+            t_target_stage = time.perf_counter()
             # Normalize frame-to-frame transparency/exposure scale with robust median ratio.
             ratio = np.asarray(flux_b[bi_idx], dtype=np.float64) / np.maximum(
                 np.asarray(flux_ref[ai_idx], dtype=np.float64), 1e-12
@@ -918,7 +974,16 @@ def main():
             used_files.append(stars_npz_path if npz_mode else p)
             matched_counts.append((frame_label, len(ai_idx)))
             overlap_rect_by_frame[frame_label] = compute_overlap_rect_xy_bounds(w_ref, h_ref, w_b, h_b, dx0, dy0)
+            logger.write_event(
+                "target_scale_and_accumulate",
+                (time.perf_counter() - t_target_stage) * 1000.0,
+                meta={
+                    "frame": frame_label,
+                    "matched_stars": int(len(ai_idx)),
+                },
+            )
 
+            t_target_stage = time.perf_counter()
             # Collect stars only detected in non-reference frames.
             unmatched = np.ones(len(xy_b), dtype=bool)
             unmatched[bi_idx] = False
@@ -957,10 +1022,43 @@ def main():
                             nonref_n_detections.append(1)
                             nonref_flux_samples.append([float(fq)])
                             nonref_frame_sets.append({frame_label})
+            logger.write_event(
+                "target_collect_nonref",
+                (time.perf_counter() - t_target_stage) * 1000.0,
+                meta={"frame": frame_label},
+            )
+            logger.write_event(
+                "target_frame_total",
+                (time.perf_counter() - t_target_frame) * 1000.0,
+                meta={
+                    "frame": frame_label,
+                    "status": "ok",
+                    "matched_stars": int(len(ai_idx)),
+                },
+            )
         except Exception as exc:
-            label = stars_npz_path.name if npz_mode else p.name
-            failed_files.append((label, str(exc)))
+            failed_files.append((frame_label, str(exc)))
+            logger.write_event(
+                "target_frame_total",
+                (time.perf_counter() - t_target_frame) * 1000.0,
+                status="error",
+                meta={
+                    "frame": frame_label,
+                    "status": "error",
+                    "error": str(exc),
+                },
+            )
+    logger.write_event(
+        "process_targets_total",
+        (time.perf_counter() - t_targets_total) * 1000.0,
+        meta={
+            "target_count": int(len(target_entries)),
+            "target_failed": int(len(failed_files)),
+            "target_used": int(len(used_files) - 1),
+        },
+    )
 
+    t_overlap_build = time.perf_counter()
     if ref_valid_region_polygons is not None:
         source_region_polygons = ref_valid_region_polygons
     else:
@@ -989,7 +1087,13 @@ def main():
                 frame_polys.append(clipped)
         final_overlap_polygons_by_frame[frame_name] = frame_polys
         final_overlap_paths_by_frame[frame_name] = polygons_to_paths(frame_polys)
+    logger.write_event(
+        "build_final_overlap_polygons",
+        (time.perf_counter() - t_overlap_build) * 1000.0,
+        meta={"frame_count": int(len(final_overlap_polygons_by_frame))},
+    )
 
+    t_rank_core = time.perf_counter()
     flux_mat = np.vstack(measurements).T  # [n_ref, n_frames_used]
     n_obs = np.sum(np.isfinite(flux_mat), axis=1)
     med_flux = np.nanmedian(flux_mat, axis=1)
@@ -1044,7 +1148,13 @@ def main():
                     f"{med_flux[i]:.8f}",
                 ]
             )
+    logger.write_event(
+        "compute_scores_and_write_rank_csv",
+        (time.perf_counter() - t_rank_core) * 1000.0,
+        meta={"ranked_candidates": int(len(order))},
+    )
 
+    t_nonref_outputs = time.perf_counter()
     nonref_plot_xy = np.empty((0, 2), dtype=np.float64)
     nonref_plot_xy_rank = np.empty((0, 2), dtype=np.float64)
     nonref_plot_xy_inner_all = np.empty((0, 2), dtype=np.float64)
@@ -1307,8 +1417,14 @@ def main():
                     "drop_reason_after_pre_knee",
                 ]
             )
+    logger.write_event(
+        "write_nonref_outputs",
+        (time.perf_counter() - t_nonref_outputs) * 1000.0,
+        meta={"nonref_count": int(nonref_count)},
+    )
 
     # Stars detected in reference but never matched in any successfully used target frame.
+    t_ref_missing_outputs = time.perf_counter()
     n_used_targets = max(len(used_files) - 1, 0)
     n_target_obs = np.maximum(n_obs - 1, 0).astype(np.int32)
     ref_missing_mask = (n_target_obs == 0) & ref_region_ok
@@ -1354,7 +1470,13 @@ def main():
         keep_m_rank = min(200, len(ref_missing_order))
         ref_missing_plot_xy_rank = xy_ref[ref_missing_order[:keep_m_rank], :]
         ref_missing_plot_ranks_rank = np.arange(1, keep_m_rank + 1, dtype=np.int32)
+    logger.write_event(
+        "write_ref_missing_outputs",
+        (time.perf_counter() - t_ref_missing_outputs) * 1000.0,
+        meta={"ref_missing_count": int(len(ref_missing_order))},
+    )
 
+    t_overlap_write = time.perf_counter()
     overlap_payload = {
         "coordinate_system": "reference_image_xy",
         "note": "Final geometric intersection polygons: (reference effective region) ∩ (ref-target overlap by dx0/dy0).",
@@ -1384,7 +1506,13 @@ def main():
             w_ref=w_ref,
             mirror_vertical=bool(args.mirror_vertical_png),
         )
+    logger.write_event(
+        "write_overlap_outputs",
+        (time.perf_counter() - t_overlap_write) * 1000.0,
+        meta={"with_overlap_png": int(out_overlap_expr_png is not None)},
+    )
 
+    t_plot_outputs = time.perf_counter()
     save_candidate_scatter(
         ref_data,
         xy_ref[:, 0],
@@ -1411,6 +1539,11 @@ def main():
         ref_missing_ranks=ref_missing_plot_ranks_rank,
         nonref_has_ref_nearby_mask=nonref_has_ref_nearby_mask_rank,
     )
+    logger.write_event(
+        "write_candidate_png_outputs",
+        (time.perf_counter() - t_plot_outputs) * 1000.0,
+        meta={"with_nonref": int(len(nonref_plot_xy_rank) > 0), "with_ref_missing": int(len(ref_missing_plot_xy_rank) > 0)},
+    )
 
     print(f"Reference: {ref_path}")
     if ref_image_path is not None:
@@ -1432,6 +1565,8 @@ def main():
         print(f"WROTE {out_overlap_expr_png}")
     print(f"WROTE {out_png}")
     print(f"WROTE {out_png_aligned}")
+    print(f"timing_jsonl={timing_path}")
+    print(f"timing_run_id={logger.run_id}")
     print(f"Non-reference-only stars: {nonref_count}")
     print("Inner-border nonref filter: median_flux_norm > 10 (knee disabled)")
     print(f"Reference-only (missing in all used targets): {len(ref_missing_order)}")
