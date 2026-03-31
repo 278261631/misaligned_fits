@@ -14,7 +14,7 @@ from astropy.wcs import WCS
 def parse_args():
     parser = argparse.ArgumentParser(
         description=(
-            "Cross-match variable_candidates_nonref_only_inner_border.csv with HIP/Variable/MPC "
+            "Cross-match variable_candidates_nonref_only_inner_border.csv with Variable/MPC "
             "services using a 15-pixel cone radius by default."
         )
     )
@@ -32,12 +32,6 @@ def parse_args():
         help="Fallback arcsec/pixel when arcsec_per_px_mean is missing in a row.",
     )
     parser.add_argument(
-        "--find-hip-csv",
-        type=Path,
-        default=None,
-        help="Output matched HIP rows CSV path (default: <input_dir>/find_hip.csv).",
-    )
-    parser.add_argument(
         "--find-variable-csv",
         type=Path,
         default=None,
@@ -49,8 +43,6 @@ def parse_args():
         default=None,
         help="Output matched MPC rows CSV path (default: <input_dir>/find_mpc.csv).",
     )
-    parser.add_argument("--hip-host", default="127.0.0.1", help="HIP server host.")
-    parser.add_argument("--hip-port", type=int, default=5002, help="HIP server port.")
     parser.add_argument("--var-host", default="127.0.0.1", help="Variable server host.")
     parser.add_argument("--var-port", type=int, default=5000, help="Variable server port.")
     parser.add_argument("--mpc-host", default="127.0.0.1", help="MPC server host.")
@@ -182,7 +174,7 @@ def rows_to_xy(rows, x_key, y_key):
     return np.column_stack([np.asarray(xs, dtype=np.float64), np.asarray(ys, dtype=np.float64)])
 
 
-def save_match_overlay_png(ref_img, candidate_xy, hip_xy, var_xy, mpc_xy, out_png: Path):
+def save_match_overlay_png(ref_img, candidate_xy, var_xy, mpc_xy, out_png: Path):
     finite = np.isfinite(ref_img)
     fill = np.nanmedian(ref_img[finite]) if np.any(finite) else 0.0
     view = np.where(finite, ref_img, fill)
@@ -205,17 +197,6 @@ def save_match_overlay_png(ref_img, candidate_xy, hip_xy, var_xy, mpc_xy, out_pn
             linewidths=1.0,
             alpha=0.95,
             label="Candidates (inner-border CSV)",
-        )
-    if len(hip_xy) > 0:
-        ax.scatter(
-            hip_xy[:, 0],
-            hip_xy[:, 1],
-            marker="x",
-            s=34,
-            c="#00E5FF",
-            linewidths=1.0,
-            alpha=0.95,
-            label="HIP matches (match_x/y)",
         )
     if len(var_xy) > 0:
         ax.scatter(
@@ -241,7 +222,7 @@ def save_match_overlay_png(ref_img, candidate_xy, hip_xy, var_xy, mpc_xy, out_pn
             label="MPC matches (match_x/y)",
         )
 
-    if len(candidate_xy) > 0 or len(hip_xy) > 0 or len(var_xy) > 0 or len(mpc_xy) > 0:
+    if len(candidate_xy) > 0 or len(var_xy) > 0 or len(mpc_xy) > 0:
         ax.legend(loc="upper right", framealpha=0.65, fontsize=6)
 
     ax.set_xlim(-0.5, w - 0.5)
@@ -258,11 +239,10 @@ def main():
     if not input_csv.exists():
         raise RuntimeError(f"Input CSV not found: {input_csv}")
 
-    out_hip = args.find_hip_csv if args.find_hip_csv is not None else input_csv.with_name("find_hip.csv")
     out_var = args.find_variable_csv if args.find_variable_csv is not None else input_csv.with_name("find_variable.csv")
     out_mpc = args.find_mpc_csv if args.find_mpc_csv is not None else input_csv.with_name("find_mpc.csv")
     out_match_png = input_csv.with_name("variable_candidates_rank_aligned_to_a_match.png")
-    expected_outputs = [out_hip, out_var, out_mpc, out_match_png]
+    expected_outputs = [out_var, out_mpc, out_match_png]
     if (not args.overwrite) and all(p.exists() for p in expected_outputs):
         print("SKIP crossmatch_nonref_candidates.py: outputs already exist (use --overwrite to regenerate)")
         for p in expected_outputs:
@@ -281,33 +261,27 @@ def main():
         rows = list(reader)
         fieldnames = list(reader.fieldnames or [])
 
-    for c in ("hip_count", "variable_count", "mpc_count"):
+    for c in ("variable_count", "mpc_count"):
         if c not in fieldnames:
             fieldnames.append(c)
 
-    hip_rows = []
     variable_rows = []
     mpc_rows = []
-    n_hip_queried = 0
     n_var_queried = 0
     n_mpc_queried = 0
 
-    hip_url = f"http://{args.hip_host}:{args.hip_port}/search"
     var_url = f"http://{args.var_host}:{args.var_port}/search"
     mpc_url = f"http://{args.mpc_host}:{args.mpc_port}/search"
     health_timeout_sec = min(float(args.timeout_sec), 2.0)
     print(f"Checking service health (timeout={health_timeout_sec:.1f}s)...")
-    hip_available = check_service_health("HIP", args.hip_host, args.hip_port, health_timeout_sec)
     var_available = check_service_health("Variable", args.var_host, args.var_port, health_timeout_sec)
     mpc_available = check_service_health("MPC", args.mpc_host, args.mpc_port, health_timeout_sec)
     print(
-        f"Health summary: hip={'up' if hip_available else 'down'}, "
-        f"variable={'up' if var_available else 'down'}, "
+        f"Health summary: variable={'up' if var_available else 'down'}, "
         f"mpc={'up' if mpc_available else 'down'}"
     )
 
     for row in rows:
-        row["hip_count"] = "-1"
         row["variable_count"] = "-1"
         row["mpc_count"] = "-1"
 
@@ -325,49 +299,10 @@ def main():
             continue
         radius_arcsec = float(args.radius_px) * float(scale)
 
-        # 1) HIP
-        hip_success = False
-        hip_count = -1
-        if hip_available:
-            try:
-                n_hip_queried += 1
-                hip_resp = request_search(
-                    hip_url,
-                    {"ra": ra, "dec": dec, "radius": radius_arcsec, "top": 500},
-                    timeout_sec=float(args.timeout_sec),
-                )
-                hip_count = int(hip_resp.get("count", 0))
-                hip_success = True
-                row["hip_count"] = str(hip_count)
-                for j, item in enumerate(hip_resp.get("results", []), start=1):
-                    item_ra, item_dec = extract_item_ra_dec(item)
-                    match_x, match_y = world_to_pixel_xy(ref_wcs, item_ra, item_dec)
-                    hip_rows.append(
-                        {
-                            "candidate_rank": rank,
-                            "candidate_x": x,
-                            "candidate_y": y,
-                            "candidate_ra_deg": f"{ra:.8f}",
-                            "candidate_dec_deg": f"{dec:.8f}",
-                            "radius_arcsec": f"{radius_arcsec:.6f}",
-                            "result_index": j,
-                            "hip": item.get("hip"),
-                            "match_ra_deg": f"{item_ra:.8f}" if item_ra is not None else "",
-                            "match_dec_deg": f"{item_dec:.8f}" if item_dec is not None else "",
-                            "match_x": f"{match_x:.4f}" if match_x is not None else "",
-                            "match_y": f"{match_y:.4f}" if match_y is not None else "",
-                            "mag": item.get("mag"),
-                            "separation_arcsec": item.get("separation_arcsec"),
-                            "raw_json": json.dumps(item, ensure_ascii=False),
-                        }
-                    )
-            except Exception:
-                pass
-
-        # 2) Variable (query when service is healthy and HIP gate allows it)
+        # 1) Variable
         var_success = False
         var_count = -1
-        if var_available and ((not hip_available) or (hip_success and hip_count < 1)):
+        if var_available:
             try:
                 n_var_queried += 1
                 var_resp = request_search(
@@ -405,10 +340,9 @@ def main():
             except Exception:
                 pass
 
-        # 3) MPC (query when service is healthy and upstream gates allow it)
-        allow_hip_gate = (not hip_available) or (hip_success and hip_count < 1)
+        # 2) MPC (query when service is healthy and upstream gate allows it)
         allow_var_gate = (not var_available) or (var_success and var_count < 1)
-        if mpc_available and allow_hip_gate and allow_var_gate and mjd is not None:
+        if mpc_available and allow_var_gate and mjd is not None:
             try:
                 n_mpc_queried += 1
                 mpc_resp = request_search(
@@ -445,27 +379,6 @@ def main():
             except Exception:
                 pass
 
-    write_rows_csv(
-        out_hip,
-        hip_rows,
-        [
-            "candidate_rank",
-            "candidate_x",
-            "candidate_y",
-            "candidate_ra_deg",
-            "candidate_dec_deg",
-            "radius_arcsec",
-            "result_index",
-            "hip",
-            "match_ra_deg",
-            "match_dec_deg",
-            "match_x",
-            "match_y",
-            "mag",
-            "separation_arcsec",
-            "raw_json",
-        ],
-    )
     write_rows_csv(
         out_var,
         variable_rows,
@@ -524,20 +437,18 @@ def main():
         try:
             ref_data = fits.getdata(ref_fits_path).astype(float)
             candidate_xy = rows_to_xy(rows, "x", "y")
-            hip_xy = rows_to_xy(hip_rows, "match_x", "match_y")
             var_xy = rows_to_xy(variable_rows, "match_x", "match_y")
             mpc_xy = rows_to_xy(mpc_rows, "match_x", "match_y")
-            save_match_overlay_png(ref_data, candidate_xy, hip_xy, var_xy, mpc_xy, out_match_png)
+            save_match_overlay_png(ref_data, candidate_xy, var_xy, mpc_xy, out_match_png)
             print(f"WROTE {out_match_png}")
         except Exception as exc:
             print(f"WARNING: Failed to write {out_match_png}: {exc}")
 
     print(f"WROTE {input_csv}")
-    print(f"WROTE {out_hip}")
     print(f"WROTE {out_var}")
     print(f"WROTE {out_mpc}")
-    print(f"queries: hip={n_hip_queried}, variable={n_var_queried}, mpc={n_mpc_queried}")
-    print(f"matches: hip={len(hip_rows)}, variable={len(variable_rows)}, mpc={len(mpc_rows)}")
+    print(f"queries: variable={n_var_queried}, mpc={n_mpc_queried}")
+    print(f"matches: variable={len(variable_rows)}, mpc={len(mpc_rows)}")
 
 
 if __name__ == "__main__":
