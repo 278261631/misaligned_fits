@@ -468,7 +468,67 @@ def resolve_reference_celestial_wcs(base: Path, ref_path: Path | None, ref_stars
     return None, None
 
 
-def resolve_reference_mjd(base: Path, ref_path: Path | None, ref_stars_all_path: Path | None, preferred_path: Path | None = None):
+def _resolve_mjd_from_header(hdr, jd_only=False):
+    jd_keys = ("JD", "JD-OBS", "JD_OBS", "JDAVG", "JD-AVG")
+    for k in jd_keys:
+        if k in hdr:
+            try:
+                return float(float(hdr[k]) - 2400000.5), k
+            except Exception:
+                pass
+    if jd_only:
+        return float("nan"), None
+    mjd_keys = ("MJD-OBS", "MJD_OBS", "MJD", "MJD-AVG", "MJDAVG", "MJDSTART", "MJDEND")
+    for k in mjd_keys:
+        if k in hdr:
+            try:
+                return float(hdr[k]), k
+            except Exception:
+                pass
+    date_obs = hdr.get("DATE-OBS")
+    if date_obs is not None:
+        try:
+            return float(Time(str(date_obs)).mjd), "DATE-OBS"
+        except Exception:
+            pass
+    return float("nan"), None
+
+
+def resolve_primary_b_like_path(base: Path, target_stars_all_paths, targets):
+    if target_stars_all_paths is not None and len(target_stars_all_paths) > 0:
+        first_npz = resolve_path(base, target_stars_all_paths[0])
+        if first_npz is not None and first_npz.exists():
+            try:
+                dat = np.load(first_npz, allow_pickle=True)
+                text = _meta_scalar_to_text(dat["source_fits"]) if "source_fits" in dat else None
+                if text is not None:
+                    p = Path(text)
+                    if not p.is_absolute():
+                        p = resolve_path(base, p)
+                    return p
+            except Exception:
+                pass
+    if targets is not None and len(targets) > 0:
+        return targets[0]
+    return None
+
+
+def resolve_reference_mjd(
+    base: Path,
+    ref_path: Path | None,
+    ref_stars_all_path: Path | None,
+    preferred_path: Path | None = None,
+    preferred_jd_path: Path | None = None,
+):
+    if preferred_jd_path is not None and preferred_jd_path.exists():
+        try:
+            hdr = fits.getheader(preferred_jd_path)
+            mjd, source_key = _resolve_mjd_from_header(hdr, jd_only=True)
+            if np.isfinite(mjd):
+                return mjd, preferred_jd_path, source_key
+        except Exception:
+            pass
+
     candidates = []
     if preferred_path is not None:
         candidates.append(preferred_path)
@@ -490,7 +550,6 @@ def resolve_reference_mjd(base: Path, ref_path: Path | None, ref_stars_all_path:
         except Exception:
             pass
     seen = set()
-    mjd_keys = ("MJD-OBS", "MJD_OBS", "MJD", "MJD-AVG", "MJDAVG", "MJDSTART", "MJDEND")
     for p in candidates:
         if p is None:
             continue
@@ -507,19 +566,10 @@ def resolve_reference_mjd(base: Path, ref_path: Path | None, ref_stars_all_path:
             hdr = fits.getheader(p)
         except Exception:
             continue
-        for k in mjd_keys:
-            if k in hdr:
-                try:
-                    return float(hdr[k]), p
-                except Exception:
-                    pass
-        date_obs = hdr.get("DATE-OBS")
-        if date_obs is not None:
-            try:
-                return float(Time(str(date_obs)).mjd), p
-            except Exception:
-                pass
-    return float("nan"), None
+        mjd, source_key = _resolve_mjd_from_header(hdr, jd_only=False)
+        if np.isfinite(mjd):
+            return mjd, p, source_key
+    return float("nan"), None, None
 
 
 def build_matches_from_alignment(xy_a, xy_b, cx, cy, fit_degree, match_radius):
@@ -902,9 +952,19 @@ def main():
         print("WARNING: Reference WCS not available, RA/DEC columns will be empty in nonref inner-border CSV.")
     else:
         print(f"RA/DEC WCS source: {ref_wcs_source}")
-    ref_mjd, ref_mjd_source = resolve_reference_mjd(base, ref_path, ref_stars_all_path, preferred_path=ref_wcs_source)
+    b_like_path = resolve_primary_b_like_path(base, args.target_stars_all, targets)
+    ref_mjd, ref_mjd_source, ref_mjd_key = resolve_reference_mjd(
+        base,
+        ref_path,
+        ref_stars_all_path,
+        preferred_path=ref_wcs_source,
+        preferred_jd_path=b_like_path,
+    )
     if np.isfinite(ref_mjd):
-        print(f"MJD source: {ref_mjd_source}, value={ref_mjd:.8f}")
+        if ref_mjd_key is not None:
+            print(f"MJD source: {ref_mjd_source}, key={ref_mjd_key}, value={ref_mjd:.8f}")
+        else:
+            print(f"MJD source: {ref_mjd_source}, value={ref_mjd:.8f}")
     else:
         print("WARNING: Reference MJD not available, MJD column will be empty in nonref inner-border CSV.")
     arcsec_per_px_x = float("nan")

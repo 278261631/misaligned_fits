@@ -96,6 +96,18 @@ def _safe_for_detection(img):
     return np.where(finite, arr, fill)
 
 
+def _resolve_mjd_from_b_header(b_header):
+    for k in ("JD", "JD-OBS", "JD_OBS", "JDAVG", "JD-AVG"):
+        if k not in b_header:
+            continue
+        try:
+            jd = float(b_header[k])
+            return float(jd - 2400000.5), k
+        except Exception:
+            continue
+    return None, None
+
+
 def reproject_b_to_a_wcs(a_data, b_data, wcs_a: WCS, wcs_b: WCS, chunk_rows=256):
     h, w = a_data.shape
     out = np.full((h, w), np.nan, dtype=np.float32)
@@ -210,10 +222,11 @@ def main():
     a_data = fits.getdata(args.a).astype(np.float32)
     b_data = fits.getdata(args.b).astype(np.float32)
     a_header = fits.getheader(args.a)
+    b_header = fits.getheader(args.b)
     h, w = a_data.shape
 
     wcs_a = WCS(a_header).celestial
-    wcs_b = WCS(fits.getheader(args.b)).celestial
+    wcs_b = WCS(b_header).celestial
 
     if args.skip_median_filter:
         b_input = b_data
@@ -224,7 +237,15 @@ def main():
     args.out_stars.parent.mkdir(parents=True, exist_ok=True)
     out_stars_all.parent.mkdir(parents=True, exist_ok=True)
 
-    fits.writeto(args.out_fits, out, a_header, overwrite=True)
+    out_header = a_header.copy()
+    mjd_from_b, jd_key = _resolve_mjd_from_b_header(b_header)
+    if mjd_from_b is not None:
+        out_header["MJD"] = float(mjd_from_b)
+        out_header["MJD-OBS"] = float(mjd_from_b)
+        out_header["HIERARCH SRC_B_JD_KEY"] = str(jd_key)
+    else:
+        print("WARNING: No JD key found in --b header; output MJD keeps reference header value.")
+    fits.writeto(args.out_fits, out, out_header, overwrite=True)
 
     detect_img = _safe_for_detection(out)
     xy_all, flux_all = detect_stars(detect_img, max_stars=0)
