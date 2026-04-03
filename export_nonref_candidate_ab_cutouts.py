@@ -2,7 +2,6 @@ from pathlib import Path
 import argparse
 import csv
 import json
-from datetime import datetime
 from collections import defaultdict
 
 import matplotlib.pyplot as plt
@@ -240,24 +239,24 @@ def save_timing_summary_png(events, out_png: Path):
     if len(events) == 0:
         return False
 
-    def parse_iso_ts(ts: str):
-        s = str(ts).strip()
-        if not s:
-            return None
-        try:
-            # JSONL uses trailing "Z" for UTC.
-            return datetime.fromisoformat(s.replace("Z", "+00:00"))
-        except Exception:
-            return None
+    # Show only rank_* leaf stages; hide parent/aggregate stages.
+    rank_leaf_events = []
+    for ev in events:
+        step = str(ev.get("step", ""))
+        if not step.startswith("rank_"):
+            continue
+        if step.endswith("_total"):
+            continue
+        rank_leaf_events.append(ev)
+    if len(rank_leaf_events) == 0:
+        return False
 
     timeline = []
-    for idx, ev in enumerate(events):
-        ts = parse_iso_ts(ev.get("ts", ""))
+    for idx, ev in enumerate(rank_leaf_events):
         dur_sec = max(0.0, float(ev.get("duration_ms", 0.0)) / 1000.0)
         timeline.append(
             {
                 "idx": idx,
-                "ts": ts,
                 "dur_sec": dur_sec,
                 "step": str(ev.get("step", "")),
                 "script": str(ev.get("script", "")),
@@ -265,26 +264,15 @@ def save_timing_summary_png(events, out_png: Path):
             }
         )
 
-    timeline.sort(key=lambda it: (it["ts"] is None, it["ts"], it["idx"]))
-
-    first_ts = None
-    for it in timeline:
-        if it["ts"] is not None:
-            first_ts = it["ts"]
-            break
-
+    # Build a contiguous timeline from logged event order:
+    # each stage starts where the previous one ended.
     cursor_sec = 0.0
     for it in timeline:
-        if it["ts"] is not None and first_ts is not None:
-            end_sec = max(0.0, (it["ts"] - first_ts).total_seconds())
-            start_sec = max(0.0, end_sec - it["dur_sec"])
-        else:
-            # Fallback for invalid/missing timestamps: pack sequentially.
-            start_sec = cursor_sec
-            end_sec = start_sec + it["dur_sec"]
+        start_sec = cursor_sec
+        end_sec = start_sec + it["dur_sec"]
         it["start_sec"] = start_sec
         it["end_sec"] = end_sec
-        cursor_sec = max(cursor_sec, end_sec)
+        cursor_sec = end_sec
 
     n_error = sum(1 for it in timeline if str(it["status"]) != "ok")
     total_sec = float(sum(it["dur_sec"] for it in timeline))
@@ -300,8 +288,8 @@ def save_timing_summary_png(events, out_png: Path):
     ax.barh(y, widths, left=starts, color=colors, edgecolor="none")
     ax.set_yticks(np.arange(len(labels)))
     ax.set_yticklabels(labels, fontsize=8)
-    ax.set_xlabel("Timeline (seconds from first event)")
-    ax.set_title("Timing Timeline (All events)")
+    ax.set_xlabel("Timeline (seconds, contiguous by stage order)")
+    ax.set_title("Timing Timeline (rank_* leaf stages)")
     ax.grid(True, axis="x", alpha=0.25, linestyle="--")
     ax.invert_yaxis()
 
@@ -314,7 +302,7 @@ def save_timing_summary_png(events, out_png: Path):
     fig.text(
         0.01,
         0.01,
-        f"events={len(events)}, errors={n_error}, sum_durations={total_sec:.2f}s, timeline_span={span_sec:.2f}s, top_scripts={top_script_txt}",
+        f"events={len(rank_leaf_events)}, errors={n_error}, sum_durations={total_sec:.2f}s, timeline_span={span_sec:.2f}s, top_scripts={top_script_txt}",
         fontsize=8,
         ha="left",
         va="bottom",
