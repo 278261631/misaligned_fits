@@ -75,7 +75,7 @@ def parse_args():
         action="store_true",
         help="Disable uniform-grid selection for --out-stars and use global brightness ranking.",
     )
-    parser.add_argument("--chunk-rows", type=int, default=256, help="Rows per block during reprojection.")
+    parser.add_argument("--chunk-rows", type=int, default=512, help="Rows per block during reprojection.")
     parser.add_argument(
         "--skip-median-filter",
         action="store_true",
@@ -207,8 +207,8 @@ def main():
             print(f"EXISTS {p}")
         return
 
-    a_data = fits.getdata(args.a).astype(float)
-    b_data = fits.getdata(args.b).astype(float)
+    a_data = fits.getdata(args.a).astype(np.float32)
+    b_data = fits.getdata(args.b).astype(np.float32)
     a_header = fits.getheader(args.a)
     h, w = a_data.shape
 
