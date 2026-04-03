@@ -2,7 +2,7 @@ from pathlib import Path
 import argparse
 import csv
 import json
-from collections import defaultdict
+from datetime import timedelta, datetime
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -225,6 +225,8 @@ def load_timing_events(path: Path, run_id: str | None = None, script: str | None
             events.append(
                 {
                     "ts": str(item.get("ts", "")),
+                    "start_ts": str(item.get("start_ts", "")),
+                    "end_ts": str(item.get("end_ts", "")),
                     "script": str(item.get("script", "")),
                     "step": str(item.get("step", "")),
                     "duration_ms": float(duration_ms),
@@ -239,43 +241,99 @@ def save_timing_summary_png(events, out_png: Path):
     if len(events) == 0:
         return False
 
-    # Show only rank_* leaf stages; hide parent/aggregate stages.
-    rank_leaf_events = []
+    # Keep only leaf events for visualization/statistics.
+    # Parent/aggregate stages (e.g. *_total, compute_* wrappers, target_frame_total)
+    # overlap child stages and can make the timeline/summary misleading.
+    parent_like_steps = {
+        "compute_scores_and_write_rank_csv",
+        "target_frame_total",
+        "process_targets_total",
+        "script_total",
+    }
+    leaf_events = []
     for ev in events:
         step = str(ev.get("step", ""))
-        if not step.startswith("rank_"):
-            continue
         if step.endswith("_total"):
             continue
-        rank_leaf_events.append(ev)
-    if len(rank_leaf_events) == 0:
+        if step in parent_like_steps:
+            continue
+        leaf_events.append(ev)
+    if len(leaf_events) == 0:
         return False
 
+    def parse_iso_utc(s):
+        v = str(s or "").strip()
+        if not v:
+            return None
+        try:
+            return datetime.fromisoformat(v.replace("Z", "+00:00"))
+        except Exception:
+            return None
+
     timeline = []
-    for idx, ev in enumerate(rank_leaf_events):
+    for idx, ev in enumerate(leaf_events):
         dur_sec = max(0.0, float(ev.get("duration_ms", 0.0)) / 1000.0)
+        start_dt = parse_iso_utc(ev.get("start_ts", ""))
+        end_dt = parse_iso_utc(ev.get("end_ts", ""))
+        if start_dt is None:
+            ts_dt = parse_iso_utc(ev.get("ts", ""))
+            if ts_dt is not None:
+                end_dt = ts_dt if end_dt is None else end_dt
+        if start_dt is None and end_dt is not None:
+            start_dt = end_dt - timedelta(seconds=dur_sec)
+        if end_dt is None and start_dt is not None:
+            end_dt = start_dt + timedelta(seconds=dur_sec)
         timeline.append(
             {
                 "idx": idx,
                 "dur_sec": dur_sec,
+                "start_dt": start_dt,
+                "end_dt": end_dt,
                 "step": str(ev.get("step", "")),
                 "script": str(ev.get("script", "")),
                 "status": str(ev.get("status", "")),
             }
         )
 
-    # Build a contiguous timeline from logged event order:
-    # each stage starts where the previous one ended.
+    timeline.sort(
+        key=lambda it: (
+            it["start_dt"] is None,
+            it["start_dt"] if it["start_dt"] is not None else it["end_dt"],
+            it["idx"],
+        )
+    )
+
+    anchor_dt = None
+    for it in timeline:
+        if it["start_dt"] is not None:
+            anchor_dt = it["start_dt"]
+            break
+        if it["end_dt"] is not None:
+            anchor_dt = it["end_dt"] - timedelta(seconds=it["dur_sec"])
+            break
+
     cursor_sec = 0.0
     for it in timeline:
-        start_sec = cursor_sec
-        end_sec = start_sec + it["dur_sec"]
+        if anchor_dt is not None and it["start_dt"] is not None:
+            start_sec = (it["start_dt"] - anchor_dt).total_seconds()
+            end_sec = start_sec + it["dur_sec"]
+            if it["end_dt"] is not None:
+                end_sec = (it["end_dt"] - anchor_dt).total_seconds()
+        elif anchor_dt is not None and it["end_dt"] is not None:
+            end_sec = (it["end_dt"] - anchor_dt).total_seconds()
+            start_sec = end_sec - it["dur_sec"]
+        else:
+            # Fallback for legacy records without timestamps.
+            start_sec = cursor_sec
+            end_sec = start_sec + it["dur_sec"]
+
+        start_sec = max(0.0, float(start_sec))
+        end_sec = max(start_sec, float(end_sec))
         it["start_sec"] = start_sec
         it["end_sec"] = end_sec
-        cursor_sec = end_sec
+        cursor_sec = max(cursor_sec, end_sec)
 
     n_error = sum(1 for it in timeline if str(it["status"]) != "ok")
-    total_sec = float(sum(it["dur_sec"] for it in timeline))
     labels = [f"{i + 1:03d} {it['script']}::{it['step']}" for i, it in enumerate(timeline)]
     starts = [it["start_sec"] for it in timeline]
     widths = [it["dur_sec"] for it in timeline]
@@ -288,21 +346,16 @@ def save_timing_summary_png(events, out_png: Path):
     ax.barh(y, widths, left=starts, color=colors, edgecolor="none")
     ax.set_yticks(np.arange(len(labels)))
     ax.set_yticklabels(labels, fontsize=8)
-    ax.set_xlabel("Timeline (seconds, contiguous by stage order)")
-    ax.set_title("Timing Timeline (rank_* leaf stages)")
+    ax.set_xlabel("Timeline (seconds from earliest start_ts)")
+    ax.set_title("Timing Timeline (Leaf events by start/end time)")
     ax.grid(True, axis="x", alpha=0.25, linestyle="--")
     ax.invert_yaxis()
 
-    script_totals = defaultdict(float)
-    for it in timeline:
-        script_totals[it["script"]] += it["dur_sec"]
-    script_items = sorted(script_totals.items(), key=lambda kv: kv[1], reverse=True)
-    top_script_txt = ", ".join([f"{k}:{v:.2f}s" for k, v in script_items[:5]])
     span_sec = max([it["end_sec"] for it in timeline], default=0.0)
     fig.text(
         0.01,
         0.01,
-        f"events={len(rank_leaf_events)}, errors={n_error}, sum_durations={total_sec:.2f}s, timeline_span={span_sec:.2f}s, top_scripts={top_script_txt}",
+        f"leaf_events={len(timeline)}, errors={n_error}, timeline_span={span_sec:.2f}s",
         fontsize=8,
         ha="left",
         va="bottom",
@@ -467,7 +520,7 @@ def main():
     events = load_timing_events(
         timing_path,
         run_id=None,
-        script="rank_variable_candidates.py",
+        script=None,
     )
     wrote_plot = save_timing_summary_png(events, timing_plot_path)
 
