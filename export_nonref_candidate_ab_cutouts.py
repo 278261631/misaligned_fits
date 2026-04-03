@@ -2,6 +2,7 @@ from pathlib import Path
 import argparse
 import csv
 import json
+from datetime import datetime
 from collections import defaultdict
 
 import matplotlib.pyplot as plt
@@ -224,6 +225,7 @@ def load_timing_events(path: Path, run_id: str | None = None, script: str | None
                 continue
             events.append(
                 {
+                    "ts": str(item.get("ts", "")),
                     "script": str(item.get("script", "")),
                     "step": str(item.get("step", "")),
                     "duration_ms": float(duration_ms),
@@ -235,40 +237,84 @@ def load_timing_events(path: Path, run_id: str | None = None, script: str | None
 
 
 def save_timing_summary_png(events, out_png: Path):
-    grouped = defaultdict(float)
-    grouped_script = defaultdict(float)
-    n_error = 0
-    for ev in events:
-        key = f"{ev['script']}::{ev['step']}"
-        grouped[key] += float(ev["duration_ms"])
-        grouped_script[ev["script"]] += float(ev["duration_ms"])
-        if str(ev.get("status", "")) != "ok":
-            n_error += 1
-
-    if len(grouped) == 0:
+    if len(events) == 0:
         return False
 
-    order = sorted(grouped.items(), key=lambda kv: kv[1], reverse=True)
-    top = order[: min(24, len(order))]
-    labels = [k for k, _ in top][::-1]
-    secs = [v / 1000.0 for _, v in top][::-1]
+    def parse_iso_ts(ts: str):
+        s = str(ts).strip()
+        if not s:
+            return None
+        try:
+            # JSONL uses trailing "Z" for UTC.
+            return datetime.fromisoformat(s.replace("Z", "+00:00"))
+        except Exception:
+            return None
 
-    fig = plt.figure(figsize=(12, 8))
+    timeline = []
+    for idx, ev in enumerate(events):
+        ts = parse_iso_ts(ev.get("ts", ""))
+        dur_sec = max(0.0, float(ev.get("duration_ms", 0.0)) / 1000.0)
+        timeline.append(
+            {
+                "idx": idx,
+                "ts": ts,
+                "dur_sec": dur_sec,
+                "step": str(ev.get("step", "")),
+                "script": str(ev.get("script", "")),
+                "status": str(ev.get("status", "")),
+            }
+        )
+
+    timeline.sort(key=lambda it: (it["ts"] is None, it["ts"], it["idx"]))
+
+    first_ts = None
+    for it in timeline:
+        if it["ts"] is not None:
+            first_ts = it["ts"]
+            break
+
+    cursor_sec = 0.0
+    for it in timeline:
+        if it["ts"] is not None and first_ts is not None:
+            end_sec = max(0.0, (it["ts"] - first_ts).total_seconds())
+            start_sec = max(0.0, end_sec - it["dur_sec"])
+        else:
+            # Fallback for invalid/missing timestamps: pack sequentially.
+            start_sec = cursor_sec
+            end_sec = start_sec + it["dur_sec"]
+        it["start_sec"] = start_sec
+        it["end_sec"] = end_sec
+        cursor_sec = max(cursor_sec, end_sec)
+
+    n_error = sum(1 for it in timeline if str(it["status"]) != "ok")
+    total_sec = float(sum(it["dur_sec"] for it in timeline))
+    labels = [f"{i + 1:03d} {it['script']}::{it['step']}" for i, it in enumerate(timeline)]
+    starts = [it["start_sec"] for it in timeline]
+    widths = [it["dur_sec"] for it in timeline]
+    colors = ["#4C78A8" if str(it["status"]) == "ok" else "#E45756" for it in timeline]
+
+    fig_h = min(36.0, max(8.0, 0.26 * len(labels) + 2.5))
+    fig = plt.figure(figsize=(14, fig_h))
     ax = fig.add_subplot(111)
-    ax.barh(np.arange(len(labels)), secs, color="#4C78A8")
+    y = np.arange(len(labels))
+    ax.barh(y, widths, left=starts, color=colors, edgecolor="none")
     ax.set_yticks(np.arange(len(labels)))
     ax.set_yticklabels(labels, fontsize=8)
-    ax.set_xlabel("Total duration (seconds)")
-    ax.set_title("Timing Summary (Top step totals)")
+    ax.set_xlabel("Timeline (seconds from first event)")
+    ax.set_title("Timing Timeline (All events)")
     ax.grid(True, axis="x", alpha=0.25, linestyle="--")
+    ax.invert_yaxis()
 
-    total_sec = float(sum(grouped.values())) / 1000.0
-    script_items = sorted(grouped_script.items(), key=lambda kv: kv[1], reverse=True)
-    top_script_txt = ", ".join([f"{k}:{v / 1000.0:.2f}s" for k, v in script_items[:5]])
+    script_totals = defaultdict(float)
+    for it in timeline:
+        script_totals[it["script"]] += it["dur_sec"]
+    script_items = sorted(script_totals.items(), key=lambda kv: kv[1], reverse=True)
+    top_script_txt = ", ".join([f"{k}:{v:.2f}s" for k, v in script_items[:5]])
+    span_sec = max([it["end_sec"] for it in timeline], default=0.0)
     fig.text(
         0.01,
         0.01,
-        f"events={len(events)}, errors={n_error}, total={total_sec:.2f}s, top_scripts={top_script_txt}",
+        f"events={len(events)}, errors={n_error}, sum_durations={total_sec:.2f}s, timeline_span={span_sec:.2f}s, top_scripts={top_script_txt}",
         fontsize=8,
         ha="left",
         va="bottom",
