@@ -1169,11 +1169,46 @@ def main():
 
     t_rank_stage = time.perf_counter()
     ref_region_ok = np.ones(n_ref, dtype=bool)
+    bbox_candidate_total = 0
+    pip_tested_total = 0
     if ref_valid_region_paths is not None:
-        # Batch point-in-polygon checks to avoid Python per-star loops.
+        # Accelerate point-in-polygon checks:
+        # 1) skip stars already accepted by previous polygons
+        # 2) use polygon AABB to prefilter candidates before contains_points()
         ref_region_ok = np.zeros(n_ref, dtype=bool)
+        x_ref = np.asarray(xy_ref[:, 0], dtype=np.float64)
+        y_ref = np.asarray(xy_ref[:, 1], dtype=np.float64)
         for path_obj in ref_valid_region_paths:
-            ref_region_ok |= path_obj.contains_points(xy_ref, radius=1e-9)
+            remaining = ~ref_region_ok
+            if not np.any(remaining):
+                break
+
+            verts = np.asarray(path_obj.vertices, dtype=np.float64)
+            if verts.ndim != 2 or verts.shape[0] == 0:
+                candidate_mask = remaining
+            else:
+                x_min = float(np.min(verts[:, 0])) - 1e-9
+                x_max = float(np.max(verts[:, 0])) + 1e-9
+                y_min = float(np.min(verts[:, 1])) - 1e-9
+                y_max = float(np.max(verts[:, 1])) + 1e-9
+                candidate_mask = (
+                    remaining
+                    & (x_ref >= x_min)
+                    & (x_ref <= x_max)
+                    & (y_ref >= y_min)
+                    & (y_ref <= y_max)
+                )
+
+            n_candidate = int(np.count_nonzero(candidate_mask))
+            bbox_candidate_total += n_candidate
+            if n_candidate == 0:
+                continue
+
+            candidate_idx = np.flatnonzero(candidate_mask)
+            inside_local = path_obj.contains_points(xy_ref[candidate_idx], radius=1e-9)
+            pip_tested_total += int(len(candidate_idx))
+            if np.any(inside_local):
+                ref_region_ok[candidate_idx[inside_local]] = True
     log_stage(
         "rank_build_region_mask",
         t_rank_stage,
@@ -1181,6 +1216,9 @@ def main():
             "n_ref_stars": int(n_ref),
             "has_ref_valid_region": int(ref_valid_region_paths is not None),
             "region_path_count": int(len(ref_valid_region_paths)) if ref_valid_region_paths is not None else 0,
+            "bbox_candidate_total": int(bbox_candidate_total),
+            "pip_tested_total": int(pip_tested_total),
+            "region_ok_count": int(np.count_nonzero(ref_region_ok)),
         },
     )
     log_stage(
