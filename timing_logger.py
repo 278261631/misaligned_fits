@@ -46,16 +46,42 @@ class TimingLogger:
         self.script = str(script)
         self.run_id = str(run_id).strip() if run_id is not None and str(run_id).strip() else _default_run_id()
         self.timing_path = resolve_timing_path(timing_path=timing_path, default_dir=default_dir)
+        # Map monotonic perf_counter timestamps to UTC wall clock for precise spans.
+        self._perf0 = time.perf_counter()
+        self._wall0_epoch = time.time()
 
-    def write_event(self, step: str, duration_ms: float, status: str = "ok", meta: dict[str, Any] | None = None) -> None:
+    def _perf_to_utc_iso(self, perf_value: float) -> str:
+        epoch = self._wall0_epoch + (float(perf_value) - self._perf0)
+        return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+    def write_event(
+        self,
+        step: str,
+        duration_ms: float,
+        status: str = "ok",
+        meta: dict[str, Any] | None = None,
+        start_perf: float | None = None,
+        end_perf: float | None = None,
+    ) -> None:
+        duration_ms = float(duration_ms)
+        if start_perf is not None and end_perf is None:
+            end_perf = float(start_perf) + (duration_ms / 1000.0)
+        elif end_perf is not None and start_perf is None:
+            start_perf = float(end_perf) - (duration_ms / 1000.0)
+
+        event_ts = self._perf_to_utc_iso(end_perf) if end_perf is not None else _utc_now_iso()
         payload = {
-            "ts": _utc_now_iso(),
+            "ts": event_ts,
             "run_id": self.run_id,
             "script": self.script,
             "step": str(step),
-            "duration_ms": float(duration_ms),
+            "duration_ms": duration_ms,
             "status": str(status),
         }
+        if start_perf is not None:
+            payload["start_ts"] = self._perf_to_utc_iso(start_perf)
+        if end_perf is not None:
+            payload["end_ts"] = self._perf_to_utc_iso(end_perf)
         if meta:
             payload["meta"] = meta
         line = json.dumps(payload, ensure_ascii=False)
@@ -68,14 +94,16 @@ class TimingLogger:
         try:
             yield
         except Exception as exc:
-            dt_ms = (time.perf_counter() - t0) * 1000.0
+            t1 = time.perf_counter()
+            dt_ms = (t1 - t0) * 1000.0
             err_meta: dict[str, Any] = {} if meta is None else dict(meta)
             err_meta["error"] = str(exc)
-            self.write_event(step=step, duration_ms=dt_ms, status="error", meta=err_meta)
+            self.write_event(step=step, duration_ms=dt_ms, status="error", meta=err_meta, start_perf=t0, end_perf=t1)
             raise
         else:
-            dt_ms = (time.perf_counter() - t0) * 1000.0
-            self.write_event(step=step, duration_ms=dt_ms, status="ok", meta=meta)
+            t1 = time.perf_counter()
+            dt_ms = (t1 - t0) * 1000.0
+            self.write_event(step=step, duration_ms=dt_ms, status="ok", meta=meta, start_perf=t0, end_perf=t1)
 
 
 def run_script_with_timing(main_fn, script_name: str, timing_path: Path | None = None, default_dir: Path | None = None):

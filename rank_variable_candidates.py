@@ -755,6 +755,19 @@ def main():
         timing_path=timing_path,
         run_id=args.timing_run_id,
     )
+
+    def log_stage(step, t0, meta=None, status="ok"):
+        t1 = time.perf_counter()
+        logger.write_event(
+            step,
+            (t1 - t0) * 1000.0,
+            status=status,
+            meta=meta,
+            start_perf=t0,
+            end_perf=t1,
+        )
+        return t1
+
     phase_t0 = time.perf_counter()
     ref_stars_all_path = resolve_path(base, args.ref_stars_all) if args.ref_stars_all is not None else None
     npz_mode = (
@@ -776,11 +789,7 @@ def main():
         targets = [p for p in inputs if p != ref_path]
         if len(targets) == 0:
             raise RuntimeError("No target files found after selecting reference.")
-    logger.write_event(
-        "init_inputs_mode",
-        (time.perf_counter() - phase_t0) * 1000.0,
-        meta={"npz_mode": int(npz_mode)},
-    )
+    log_stage("init_inputs_mode", phase_t0, meta={"npz_mode": int(npz_mode)})
 
     phase_t0 = time.perf_counter()
     out_csv = args.out_csv if args.out_csv is not None else (base / "variable_candidates_rank.csv")
@@ -837,7 +846,7 @@ def main():
     if out_overlap_expr_png is not None:
         out_overlap_expr_png.parent.mkdir(parents=True, exist_ok=True)
     out_png.parent.mkdir(parents=True, exist_ok=True)
-    logger.write_event("prepare_output_paths", (time.perf_counter() - phase_t0) * 1000.0)
+    log_stage("prepare_output_paths", phase_t0)
 
     phase_t0 = time.perf_counter()
     ref_data = None
@@ -885,11 +894,7 @@ def main():
             raise RuntimeError(f"No stars detected in reference: {ref_path}")
         if ref_data is None:
             ref_data = np.full(ref_detect_data.shape, 0.5, dtype=np.float32)
-    logger.write_event(
-        "load_reference",
-        (time.perf_counter() - phase_t0) * 1000.0,
-        meta={"ref_stars": int(len(xy_ref))},
-    )
+    log_stage("load_reference", phase_t0, meta={"ref_stars": int(len(xy_ref))})
 
     phase_t0 = time.perf_counter()
     ref_wcs, ref_wcs_source = resolve_reference_celestial_wcs(base, ref_path, ref_stars_all_path)
@@ -919,9 +924,9 @@ def main():
                 )
         except Exception:
             print("WARNING: Failed to estimate global plate scale from reference WCS.")
-    logger.write_event(
+    log_stage(
         "resolve_reference_wcs_mjd_scale",
-        (time.perf_counter() - phase_t0) * 1000.0,
+        phase_t0,
         meta={
             "has_wcs": int(ref_wcs is not None),
             "has_mjd": int(np.isfinite(ref_mjd)),
@@ -989,9 +994,9 @@ def main():
 
                 dx0, dy0 = estimate_translation_from_stars(xy_ref, xy_b, top_n=300, bin_size=2.0)
                 ai_idx, bi_idx = build_matches(xy_ref, xy_b, dx0, dy0, match_radius=float(args.match_radius))
-            logger.write_event(
+            log_stage(
                 "target_load_and_match",
-                (time.perf_counter() - t_target_stage) * 1000.0,
+                t_target_stage,
                 meta={
                     "frame": frame_label,
                     "mode": "npz" if npz_mode else "fits",
@@ -1017,9 +1022,9 @@ def main():
             used_files.append(stars_npz_path if npz_mode else p)
             matched_counts.append((frame_label, len(ai_idx)))
             overlap_rect_by_frame[frame_label] = compute_overlap_rect_xy_bounds(w_ref, h_ref, w_b, h_b, dx0, dy0)
-            logger.write_event(
+            log_stage(
                 "target_scale_and_accumulate",
-                (time.perf_counter() - t_target_stage) * 1000.0,
+                t_target_stage,
                 meta={
                     "frame": frame_label,
                     "matched_stars": int(len(ai_idx)),
@@ -1065,14 +1070,14 @@ def main():
                             nonref_n_detections.append(1)
                             nonref_flux_samples.append([float(fq)])
                             nonref_frame_sets.append({frame_label})
-            logger.write_event(
+            log_stage(
                 "target_collect_nonref",
-                (time.perf_counter() - t_target_stage) * 1000.0,
+                t_target_stage,
                 meta={"frame": frame_label},
             )
-            logger.write_event(
+            log_stage(
                 "target_frame_total",
-                (time.perf_counter() - t_target_frame) * 1000.0,
+                t_target_frame,
                 meta={
                     "frame": frame_label,
                     "status": "ok",
@@ -1081,9 +1086,9 @@ def main():
             )
         except Exception as exc:
             failed_files.append((frame_label, str(exc)))
-            logger.write_event(
+            log_stage(
                 "target_frame_total",
-                (time.perf_counter() - t_target_frame) * 1000.0,
+                t_target_frame,
                 status="error",
                 meta={
                     "frame": frame_label,
@@ -1091,9 +1096,9 @@ def main():
                     "error": str(exc),
                 },
             )
-    logger.write_event(
+    log_stage(
         "process_targets_total",
-        (time.perf_counter() - t_targets_total) * 1000.0,
+        t_targets_total,
         meta={
             "target_count": int(len(target_entries)),
             "target_failed": int(len(failed_files)),
@@ -1130,26 +1135,57 @@ def main():
                 frame_polys.append(clipped)
         final_overlap_polygons_by_frame[frame_name] = frame_polys
         final_overlap_paths_by_frame[frame_name] = polygons_to_paths(frame_polys)
-    logger.write_event(
+    log_stage(
         "build_final_overlap_polygons",
-        (time.perf_counter() - t_overlap_build) * 1000.0,
+        t_overlap_build,
         meta={"frame_count": int(len(final_overlap_polygons_by_frame))},
     )
 
     t_rank_core = time.perf_counter()
+
     t_rank_stage = time.perf_counter()
     flux_mat = np.vstack(measurements).T  # [n_ref, n_frames_used]
+    log_stage(
+        "rank_build_flux_matrix",
+        t_rank_stage,
+        meta={"n_ref_stars": int(n_ref), "n_used_frames": int(flux_mat.shape[1])},
+    )
+
+    t_rank_stage = time.perf_counter()
     n_obs = np.sum(np.isfinite(flux_mat), axis=1)
+    log_stage(
+        "rank_count_observations",
+        t_rank_stage,
+        meta={"n_ref_stars": int(n_ref)},
+    )
+
+    t_rank_stage = time.perf_counter()
     med_flux = np.nanmedian(flux_mat, axis=1)
+    log_stage(
+        "rank_compute_median_flux",
+        t_rank_stage,
+        meta={"n_ref_stars": int(n_ref)},
+    )
+
+    t_rank_stage = time.perf_counter()
     ref_region_ok = np.ones(n_ref, dtype=bool)
     if ref_valid_region_paths is not None:
         # Batch point-in-polygon checks to avoid Python per-star loops.
         ref_region_ok = np.zeros(n_ref, dtype=bool)
         for path_obj in ref_valid_region_paths:
             ref_region_ok |= path_obj.contains_points(xy_ref, radius=1e-9)
-    logger.write_event(
-        "rank_build_flux_matrix_and_region_mask",
-        (time.perf_counter() - t_rank_stage) * 1000.0,
+    log_stage(
+        "rank_build_region_mask",
+        t_rank_stage,
+        meta={
+            "n_ref_stars": int(n_ref),
+            "has_ref_valid_region": int(ref_valid_region_paths is not None),
+            "region_path_count": int(len(ref_valid_region_paths)) if ref_valid_region_paths is not None else 0,
+        },
+    )
+    log_stage(
+        "rank_build_flux_matrix_and_region_mask_total",
+        t_rank_core,
         meta={
             "n_ref_stars": int(n_ref),
             "n_used_frames": int(flux_mat.shape[1]),
@@ -1160,9 +1196,9 @@ def main():
     t_rank_stage = time.perf_counter()
     valid = (n_obs >= int(args.min_observations)) & np.isfinite(med_flux) & (med_flux > 0.0) & ref_region_ok
     n_valid = int(np.count_nonzero(valid))
-    logger.write_event(
+    log_stage(
         "rank_filter_valid_candidates",
-        (time.perf_counter() - t_rank_stage) * 1000.0,
+        t_rank_stage,
         meta={"valid_count": n_valid, "min_observations": int(args.min_observations)},
     )
     if n_valid == 0:
@@ -1180,18 +1216,18 @@ def main():
     # Composite variability score. Higher means more variable-like.
     score = mad_rel + 0.5 * amp_rel
     score[~valid] = np.nan
-    logger.write_event(
+    log_stage(
         "rank_compute_variability_metrics",
-        (time.perf_counter() - t_rank_stage) * 1000.0,
+        t_rank_stage,
         meta={"valid_count": n_valid},
     )
 
     t_rank_stage = time.perf_counter()
     idx = np.where(valid)[0]
     order = idx[np.argsort(score[idx])[::-1]]
-    logger.write_event(
+    log_stage(
         "rank_sort_candidates",
-        (time.perf_counter() - t_rank_stage) * 1000.0,
+        t_rank_stage,
         meta={"ranked_candidates": int(len(order))},
     )
 
@@ -1224,14 +1260,14 @@ def main():
                         f"{med_flux[i]:.8f}",
                     ]
                 )
-    logger.write_event(
+    log_stage(
         "rank_write_csv",
-        (time.perf_counter() - t_rank_stage) * 1000.0,
+        t_rank_stage,
         meta={"rows_written": int(len(order)) if csv_detail else 0, "csv_detail": int(csv_detail)},
     )
-    logger.write_event(
+    log_stage(
         "compute_scores_and_write_rank_csv",
-        (time.perf_counter() - t_rank_core) * 1000.0,
+        t_rank_core,
         meta={"ranked_candidates": int(len(order)), "csv_detail": int(csv_detail), "wrote_rank_csv": int(csv_detail)},
     )
 
@@ -1502,9 +1538,9 @@ def main():
                         "drop_reason_after_pre_knee",
                     ]
                 )
-    logger.write_event(
+    log_stage(
         "write_nonref_outputs",
-        (time.perf_counter() - t_nonref_outputs) * 1000.0,
+        t_nonref_outputs,
         meta={"nonref_count": int(nonref_count), "csv_detail": int(csv_detail)},
     )
 
@@ -1556,9 +1592,9 @@ def main():
         keep_m_rank = min(200, len(ref_missing_order))
         ref_missing_plot_xy_rank = xy_ref[ref_missing_order[:keep_m_rank], :]
         ref_missing_plot_ranks_rank = np.arange(1, keep_m_rank + 1, dtype=np.int32)
-    logger.write_event(
+    log_stage(
         "write_ref_missing_outputs",
-        (time.perf_counter() - t_ref_missing_outputs) * 1000.0,
+        t_ref_missing_outputs,
         meta={"ref_missing_count": int(len(ref_missing_order)), "csv_detail": int(csv_detail)},
     )
 
@@ -1592,9 +1628,9 @@ def main():
             w_ref=w_ref,
             mirror_vertical=bool(args.mirror_vertical_png),
         )
-    logger.write_event(
+    log_stage(
         "write_overlap_outputs",
-        (time.perf_counter() - t_overlap_write) * 1000.0,
+        t_overlap_write,
         meta={"with_overlap_png": int(out_overlap_expr_png is not None)},
     )
 
@@ -1625,9 +1661,9 @@ def main():
         ref_missing_ranks=ref_missing_plot_ranks_rank,
         nonref_has_ref_nearby_mask=nonref_has_ref_nearby_mask_rank,
     )
-    logger.write_event(
+    log_stage(
         "write_candidate_png_outputs",
-        (time.perf_counter() - t_plot_outputs) * 1000.0,
+        t_plot_outputs,
         meta={"with_nonref": int(len(nonref_plot_xy_rank) > 0), "with_ref_missing": int(len(ref_missing_plot_xy_rank) > 0)},
     )
 
