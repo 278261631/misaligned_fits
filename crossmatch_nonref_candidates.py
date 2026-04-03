@@ -61,6 +61,12 @@ def parse_args():
     )
     parser.add_argument("--timeout-sec", type=float, default=45.0, help="HTTP timeout in seconds.")
     parser.add_argument(
+        "--only-rank",
+        type=str,
+        default=None,
+        help="Only query/update the row whose rank equals this value; default processes all rows.",
+    )
+    parser.add_argument(
         "--overwrite",
         action="store_true",
         help="Overwrite outputs; default skips when all expected outputs already exist.",
@@ -131,6 +137,21 @@ def write_jsonl(path: Path, rows):
         for row in rows:
             f.write(json.dumps(row, ensure_ascii=False))
             f.write("\n")
+
+
+def append_jsonl(path: Path, rows):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        for row in rows:
+            f.write(json.dumps(row, ensure_ascii=False))
+            f.write("\n")
+
+
+def read_rows_csv(path: Path):
+    if not path.exists():
+        return []
+    with path.open("r", newline="", encoding="utf-8") as f:
+        return list(csv.DictReader(f))
 
 
 def load_reference_wcs(ref_fits: Path | None, input_csv: Path):
@@ -276,7 +297,7 @@ def main():
     )
     out_match_png = input_csv.with_name("variable_candidates_rank_aligned_to_a_match.png")
     expected_outputs = [out_var, out_mpc, out_mpc_debug, out_match_png]
-    if (not args.overwrite) and all(p.exists() for p in expected_outputs):
+    if (args.only_rank is None) and (not args.overwrite) and all(p.exists() for p in expected_outputs):
         print("SKIP crossmatch_nonref_candidates.py: outputs already exist (use --overwrite to regenerate)")
         for p in expected_outputs:
             print(f"EXISTS {p}")
@@ -303,6 +324,9 @@ def main():
     mpc_debug_rows = []
     n_var_queried = 0
     n_mpc_queried = 0
+    n_rows_processed = 0
+    target_rank = None if args.only_rank is None else str(args.only_rank).strip()
+    found_target_rank = False
 
     var_url = f"http://{args.var_host}:{args.var_port}/search"
     mpc_url = f"http://{args.mpc_host}:{args.mpc_port}/search"
@@ -316,10 +340,18 @@ def main():
     )
 
     for row in rows:
+        rank = row.get("rank", "")
+        rank_norm = str(rank).strip()
+        should_process = (target_rank is None) or (rank_norm == target_rank)
+        if not should_process:
+            continue
+        n_rows_processed += 1
+        if target_rank is not None:
+            found_target_rank = True
+
         row["variable_count"] = "-1"
         row["mpc_count"] = "-1"
 
-        rank = row.get("rank", "")
         x = row.get("x", "")
         y = row.get("y", "")
         ra = parse_float(row.get("ra_deg"))
@@ -450,52 +482,57 @@ def main():
                 )
                 print(f"WARNING: MPC query failed for rank={rank}")
 
-    write_rows_csv(
-        out_var,
-        variable_rows,
-        [
-            "candidate_rank",
-            "candidate_x",
-            "candidate_y",
-            "candidate_ra_deg",
-            "candidate_dec_deg",
-            "radius_arcsec",
-            "result_index",
-            "name",
-            "match_ra_deg",
-            "match_dec_deg",
-            "match_x",
-            "match_y",
-            "mag_min",
-            "mag_max",
-            "period",
-            "separation_arcsec",
-            "raw_json",
-        ],
-    )
-    write_rows_csv(
-        out_mpc,
-        mpc_rows,
-        [
-            "candidate_rank",
-            "candidate_x",
-            "candidate_y",
-            "candidate_ra_deg",
-            "candidate_dec_deg",
-            "candidate_mjd",
-            "radius_arcsec",
-            "result_index",
-            "name",
-            "match_ra_deg",
-            "match_dec_deg",
-            "match_x",
-            "match_y",
-            "mag",
-            "separation",
-            "raw_json",
-        ],
-    )
-    write_jsonl(out_mpc_debug, mpc_debug_rows)
+    var_fieldnames = [
+        "candidate_rank",
+        "candidate_x",
+        "candidate_y",
+        "candidate_ra_deg",
+        "candidate_dec_deg",
+        "radius_arcsec",
+        "result_index",
+        "name",
+        "match_ra_deg",
+        "match_dec_deg",
+        "match_x",
+        "match_y",
+        "mag_min",
+        "mag_max",
+        "period",
+        "separation_arcsec",
+        "raw_json",
+    ]
+    mpc_fieldnames = [
+        "candidate_rank",
+        "candidate_x",
+        "candidate_y",
+        "candidate_ra_deg",
+        "candidate_dec_deg",
+        "candidate_mjd",
+        "radius_arcsec",
+        "result_index",
+        "name",
+        "match_ra_deg",
+        "match_dec_deg",
+        "match_x",
+        "match_y",
+        "mag",
+        "separation",
+        "raw_json",
+    ]
+    if target_rank is None:
+        write_rows_csv(out_var, variable_rows, var_fieldnames)
+        write_rows_csv(out_mpc, mpc_rows, mpc_fieldnames)
+        write_jsonl(out_mpc_debug, mpc_debug_rows)
+    else:
+        existing_var_rows = read_rows_csv(out_var)
+        existing_var_rows = [r for r in existing_var_rows if str(r.get("candidate_rank", "")).strip() != target_rank]
+        write_rows_csv(out_var, existing_var_rows + variable_rows, var_fieldnames)
+
+        existing_mpc_rows = read_rows_csv(out_mpc)
+        existing_mpc_rows = [r for r in existing_mpc_rows if str(r.get("candidate_rank", "")).strip() != target_rank]
+        write_rows_csv(out_mpc, existing_mpc_rows + mpc_rows, mpc_fieldnames)
+
+        append_jsonl(out_mpc_debug, mpc_debug_rows)
 
     with input_csv.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -503,7 +540,9 @@ def main():
         for row in rows:
             writer.writerow(row)
 
-    if ref_fits_path is None:
+    if target_rank is not None:
+        print("INFO: --only-rank mode, skip rewriting match overlay PNG.")
+    elif ref_fits_path is None:
         print("WARNING: Reference FITS unavailable, skip variable_candidates_rank_aligned_to_a_match.png.")
     else:
         try:
@@ -520,6 +559,10 @@ def main():
     print(f"WROTE {out_var}")
     print(f"WROTE {out_mpc}")
     print(f"WROTE {out_mpc_debug}")
+    if target_rank is not None and (not found_target_rank):
+        print(f"WARNING: --only-rank target not found: {target_rank}")
+    if target_rank is not None:
+        print(f"INFO: --only-rank={target_rank}, processed_rows={n_rows_processed}")
     print(f"queries: variable={n_var_queried}, mpc={n_mpc_queried}")
     print(f"matches: variable={len(variable_rows)}, mpc={len(mpc_rows)}")
 
