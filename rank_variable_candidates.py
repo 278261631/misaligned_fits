@@ -1319,6 +1319,8 @@ def main():
     do_nonref_ref_check = (nonref_ref_check_radius > 0.0) and (len(xy_ref) > 0)
     ref_tree = cKDTree(np.asarray(xy_ref, dtype=np.float64)) if do_nonref_ref_check else None
     nonref_count = len(nonref_xy)
+    overlap_bbox_candidate_total = 0
+    overlap_pip_tested_total = 0
     if nonref_count > 0:
         nonref_xy_arr = np.asarray(nonref_xy, dtype=np.float64)
         nonref_n_frames = np.asarray([len(s) for s in nonref_frame_sets], dtype=np.int32)
@@ -1327,14 +1329,48 @@ def main():
         # Primary key: median flux (desc), tie-breakers: detections (desc), frames (desc).
         nonref_order = np.lexsort((-nonref_n_frames, -nonref_n_det, -nonref_median_flux))
         nonref_inside = np.zeros(nonref_count, dtype=bool)
-        for i in range(nonref_count):
-            xi = float(nonref_xy_arr[i, 0])
-            yi = float(nonref_xy_arr[i, 1])
-            inside_overlap = any(
-                point_in_any_region(xi, yi, final_overlap_paths_by_frame.get(frame_name, []))
-                for frame_name in nonref_frame_sets[i]
-            )
-            nonref_inside[i] = inside_overlap
+        # Build inverted index: frame -> candidate indices observed in this frame.
+        frame_to_candidate_idx = {}
+        for i, frame_names in enumerate(nonref_frame_sets):
+            for frame_name in frame_names:
+                frame_to_candidate_idx.setdefault(frame_name, []).append(i)
+
+        x_nonref = np.asarray(nonref_xy_arr[:, 0], dtype=np.float64)
+        y_nonref = np.asarray(nonref_xy_arr[:, 1], dtype=np.float64)
+        for frame_name, idx_list in frame_to_candidate_idx.items():
+            region_paths = final_overlap_paths_by_frame.get(frame_name, [])
+            if len(region_paths) == 0:
+                continue
+            frame_idx = np.asarray(idx_list, dtype=np.int32)
+            for path_obj in region_paths:
+                remaining = frame_idx[~nonref_inside[frame_idx]]
+                if len(remaining) == 0:
+                    break
+
+                verts = np.asarray(path_obj.vertices, dtype=np.float64)
+                if verts.ndim != 2 or verts.shape[0] == 0:
+                    candidate_idx = remaining
+                else:
+                    x_min = float(np.min(verts[:, 0])) - 1e-9
+                    x_max = float(np.max(verts[:, 0])) + 1e-9
+                    y_min = float(np.min(verts[:, 1])) - 1e-9
+                    y_max = float(np.max(verts[:, 1])) + 1e-9
+                    candidate_mask = (
+                        (x_nonref[remaining] >= x_min)
+                        & (x_nonref[remaining] <= x_max)
+                        & (y_nonref[remaining] >= y_min)
+                        & (y_nonref[remaining] <= y_max)
+                    )
+                    candidate_idx = remaining[candidate_mask]
+
+                n_candidate = int(len(candidate_idx))
+                overlap_bbox_candidate_total += n_candidate
+                if n_candidate == 0:
+                    continue
+                inside_local = path_obj.contains_points(nonref_xy_arr[candidate_idx], radius=1e-9)
+                overlap_pip_tested_total += n_candidate
+                if np.any(inside_local):
+                    nonref_inside[candidate_idx[inside_local]] = True
 
         if csv_detail:
             with out_csv_nonref.open("w", newline="", encoding="utf-8") as f:
@@ -1579,7 +1615,12 @@ def main():
     log_stage(
         "write_nonref_outputs",
         t_nonref_outputs,
-        meta={"nonref_count": int(nonref_count), "csv_detail": int(csv_detail)},
+        meta={
+            "nonref_count": int(nonref_count),
+            "csv_detail": int(csv_detail),
+            "overlap_bbox_candidate_total": int(overlap_bbox_candidate_total),
+            "overlap_pip_tested_total": int(overlap_pip_tested_total),
+        },
     )
 
     # Stars detected in reference but never matched in any successfully used target frame.
