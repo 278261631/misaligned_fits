@@ -146,6 +146,12 @@ def parse_args():
         help="Top K rows to write into nonref inner-border CSV (<=0 means no limit).",
     )
     parser.add_argument(
+        "--inner-border-margin-px",
+        type=float,
+        default=50.0,
+        help="Minimum distance in pixels from final overlap boundary for nonref inner-border CSV (<=0 disables).",
+    )
+    parser.add_argument(
         "--nonref-ref-check-radius",
         type=float,
         default=10.0,
@@ -310,6 +316,35 @@ def polygons_to_paths(polygons_xy):
 
 def point_in_any_region(x, y, region_paths):
     return any(p.contains_point((float(x), float(y)), radius=1e-9) for p in region_paths)
+
+
+def min_distance_points_to_polygon_boundary(points_xy, poly_xy):
+    pts = np.asarray(points_xy, dtype=np.float64)
+    if pts.ndim != 2 or pts.shape[1] != 2:
+        raise ValueError("points_xy must have shape [N, 2]")
+    if len(pts) == 0:
+        return np.empty((0,), dtype=np.float64)
+
+    ring = _close_ring(np.asarray(poly_xy, dtype=np.float64))
+    if ring.ndim != 2 or ring.shape[1] != 2 or ring.shape[0] < 2:
+        return np.full(len(pts), np.inf, dtype=np.float64)
+
+    seg_a = ring[:-1]
+    seg_b = ring[1:]
+    seg_ab = seg_b - seg_a
+    seg_ab2 = np.sum(seg_ab * seg_ab, axis=1)
+    min_dist = np.full(len(pts), np.inf, dtype=np.float64)
+
+    for a, ab, ab2 in zip(seg_a, seg_ab, seg_ab2):
+        ap = pts - a
+        if ab2 <= 1e-12:
+            closest = np.repeat(a[None, :], len(pts), axis=0)
+        else:
+            t = np.clip(np.sum(ap * ab[None, :], axis=1) / ab2, 0.0, 1.0)
+            closest = a[None, :] + t[:, None] * ab[None, :]
+        d = np.hypot(pts[:, 0] - closest[:, 0], pts[:, 1] - closest[:, 1])
+        min_dist = np.minimum(min_dist, d)
+    return min_dist
 
 
 def _clip_poly_halfspace(poly, keep_fn, intersect_fn):
@@ -1376,6 +1411,7 @@ def main():
     nonref_has_ref_nearby_mask_rank = np.empty((0,), dtype=bool)
     nonref_plot_ranks_rank = np.empty((0,), dtype=np.int32)
     nonref_ref_check_radius = float(args.nonref_ref_check_radius)
+    inner_border_margin_px = max(float(args.inner_border_margin_px), 0.0)
     do_nonref_ref_check = (nonref_ref_check_radius > 0.0) and (len(xy_ref) > 0)
     ref_tree = cKDTree(np.asarray(xy_ref, dtype=np.float64)) if do_nonref_ref_check else None
     nonref_count = len(nonref_xy)
@@ -1428,6 +1464,14 @@ def main():
                 if n_candidate == 0:
                     continue
                 inside_local = path_obj.contains_points(nonref_xy_arr[candidate_idx], radius=1e-9)
+                if inner_border_margin_px > 0.0 and np.any(inside_local):
+                    inside_idx = candidate_idx[inside_local]
+                    boundary_dist = min_distance_points_to_polygon_boundary(
+                        nonref_xy_arr[inside_idx],
+                        path_obj.vertices,
+                    )
+                    inside_local_idx = np.flatnonzero(inside_local)
+                    inside_local[inside_local_idx] = boundary_dist > inner_border_margin_px
                 overlap_pip_tested_total += n_candidate
                 if np.any(inside_local):
                     nonref_inside[candidate_idx[inside_local]] = True
@@ -1680,6 +1724,7 @@ def main():
             "csv_detail": int(csv_detail),
             "overlap_bbox_candidate_total": int(overlap_bbox_candidate_total),
             "overlap_pip_tested_total": int(overlap_pip_tested_total),
+            "inner_border_margin_px": float(inner_border_margin_px),
         },
     )
 
@@ -1841,7 +1886,11 @@ def main():
     print(f"timing_jsonl={timing_path}")
     print(f"timing_run_id={logger.run_id}")
     print(f"Non-reference-only stars: {nonref_count}")
-    print("Inner-border nonref filter: median_flux_norm > 10 (knee disabled)")
+    print(
+        "Inner-border nonref filter: "
+        f"distance_to_overlap_boundary > {inner_border_margin_px:.2f} px, "
+        "median_flux_norm > 10 (knee disabled)"
+    )
     print(f"Reference-only (missing in all used targets): {len(ref_missing_order)}")
 
     if matched_counts:
