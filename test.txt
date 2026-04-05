@@ -62,7 +62,7 @@ python "D:\github\misaligned_fits\rank_variable_candidates.py" ^
     --out-csv-nonref-inner-border "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_/variable_candidates_nonref_only_inner_border.csv" ^
     --out-csv-nonref-inner-border-pre-knee "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_/variable_candidates_nonref_only_inner_border_pre_knee.csv" ^
     --min-observations 2 --nonref-ref-check-radius 10 ^
-    --overwrite --csv-detail
+    --overwrite --csv-detail --inner-border-margin-px 50
 
 python "D:/github/misaligned_fits/crossmatch_nonref_candidates.py" ^
     --input-csv "D:/missalign/GY2_K043-7_UTC20260310_163625_-25C_/variable_candidates_nonref_only_inner_border.csv" ^
