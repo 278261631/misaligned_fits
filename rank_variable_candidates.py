@@ -333,18 +333,24 @@ def min_distance_points_to_polygon_boundary(points_xy, poly_xy):
     seg_b = ring[1:]
     seg_ab = seg_b - seg_a
     seg_ab2 = np.sum(seg_ab * seg_ab, axis=1)
-    min_dist = np.full(len(pts), np.inf, dtype=np.float64)
-
-    for a, ab, ab2 in zip(seg_a, seg_ab, seg_ab2):
-        ap = pts - a
-        if ab2 <= 1e-12:
-            closest = np.repeat(a[None, :], len(pts), axis=0)
-        else:
-            t = np.clip(np.sum(ap * ab[None, :], axis=1) / ab2, 0.0, 1.0)
-            closest = a[None, :] + t[:, None] * ab[None, :]
-        d = np.hypot(pts[:, 0] - closest[:, 0], pts[:, 1] - closest[:, 1])
-        min_dist = np.minimum(min_dist, d)
-    return min_dist
+    min_dist2 = np.full(len(pts), np.inf, dtype=np.float64)
+    nondeg = seg_ab2 > 1e-12
+    # Process points in chunks to keep temporary [chunk, n_segments] arrays bounded.
+    chunk_size = 4096
+    for start in range(0, len(pts), chunk_size):
+        end = min(start + chunk_size, len(pts))
+        pts_chunk = pts[start:end]
+        ap = pts_chunk[:, None, :] - seg_a[None, :, :]
+        dot = np.sum(ap * seg_ab[None, :, :], axis=2)
+        t = np.zeros_like(dot)
+        if np.any(nondeg):
+            t[:, nondeg] = dot[:, nondeg] / seg_ab2[None, nondeg]
+        t = np.clip(t, 0.0, 1.0)
+        closest = seg_a[None, :, :] + t[:, :, None] * seg_ab[None, :, :]
+        diff = pts_chunk[:, None, :] - closest
+        d2 = np.sum(diff * diff, axis=2)
+        min_dist2[start:end] = np.min(d2, axis=1)
+    return np.sqrt(min_dist2)
 
 
 def _clip_poly_halfspace(poly, keep_fn, intersect_fn):
@@ -1417,6 +1423,9 @@ def main():
     nonref_count = len(nonref_xy)
     overlap_bbox_candidate_total = 0
     overlap_pip_tested_total = 0
+    exact_boundary_points_total = 0
+    inner_margin_bbox_safe_total = 0
+    t_nonref_inside = time.perf_counter()
     if nonref_count > 0:
         nonref_xy_arr = np.asarray(nonref_xy, dtype=np.float64)
         nonref_n_frames = np.asarray([len(s) for s in nonref_frame_sets], dtype=np.int32)
@@ -1446,11 +1455,13 @@ def main():
                 verts = np.asarray(path_obj.vertices, dtype=np.float64)
                 if verts.ndim != 2 or verts.shape[0] == 0:
                     candidate_idx = remaining
+                    bbox_valid = False
                 else:
                     x_min = float(np.min(verts[:, 0])) - 1e-9
                     x_max = float(np.max(verts[:, 0])) + 1e-9
                     y_min = float(np.min(verts[:, 1])) - 1e-9
                     y_max = float(np.max(verts[:, 1])) + 1e-9
+                    bbox_valid = True
                     candidate_mask = (
                         (x_nonref[remaining] >= x_min)
                         & (x_nonref[remaining] <= x_max)
@@ -1465,17 +1476,56 @@ def main():
                     continue
                 inside_local = path_obj.contains_points(nonref_xy_arr[candidate_idx], radius=1e-9)
                 if inner_border_margin_px > 0.0 and np.any(inside_local):
-                    inside_idx = candidate_idx[inside_local]
-                    boundary_dist = min_distance_points_to_polygon_boundary(
-                        nonref_xy_arr[inside_idx],
-                        path_obj.vertices,
-                    )
                     inside_local_idx = np.flatnonzero(inside_local)
-                    inside_local[inside_local_idx] = boundary_dist > inner_border_margin_px
+                    inside_idx = candidate_idx[inside_local]
+                    inside_pts = nonref_xy_arr[inside_idx]
+                    keep_inside = np.ones(len(inside_idx), dtype=bool)
+                    if bbox_valid:
+                        bbox_inner_dist = np.minimum.reduce(
+                            [
+                                inside_pts[:, 0] - x_min,
+                                x_max - inside_pts[:, 0],
+                                inside_pts[:, 1] - y_min,
+                                y_max - inside_pts[:, 1],
+                            ]
+                        )
+                        near_boundary = bbox_inner_dist <= inner_border_margin_px
+                        inner_margin_bbox_safe_total += int(np.count_nonzero(~near_boundary))
+                    else:
+                        near_boundary = np.ones(len(inside_idx), dtype=bool)
+                    if np.any(near_boundary):
+                        near_pts = inside_pts[near_boundary]
+                        exact_boundary_points_total += int(len(near_pts))
+                        boundary_dist = min_distance_points_to_polygon_boundary(
+                            near_pts,
+                            path_obj.vertices,
+                        )
+                        keep_inside[near_boundary] = boundary_dist > inner_border_margin_px
+                    inside_local[inside_local_idx] = keep_inside
                 overlap_pip_tested_total += n_candidate
                 if np.any(inside_local):
                     nonref_inside[candidate_idx[inside_local]] = True
+    log_stage(
+        "write_nonref_compute_inside_mask",
+        t_nonref_inside,
+        meta={
+            "nonref_count": int(nonref_count),
+            "overlap_bbox_candidate_total": int(overlap_bbox_candidate_total),
+            "overlap_pip_tested_total": int(overlap_pip_tested_total),
+            "inner_border_margin_px": float(inner_border_margin_px),
+            "inner_margin_bbox_safe_total": int(inner_margin_bbox_safe_total),
+            "exact_boundary_points_total": int(exact_boundary_points_total),
+        },
+    )
 
+    t_nonref_csv_stage = time.perf_counter()
+    t_nonref_filter_stage = time.perf_counter()
+    selected_inner_border_count = 0
+    pre_knee_visible_count = 0
+    kept_after_flux_threshold_count = 0
+    kept_after_topk_count = 0
+    topk_truncated_count = 0
+    if nonref_count > 0:
         if csv_detail:
             with out_csv_nonref.open("w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
@@ -1544,16 +1594,35 @@ def main():
                 continue
             if has_ref_nearby_all[i]:
                 continue
+            pre_knee_visible_count += 1
             if not (float(nonref_median_flux[i]) > float(nonref_inner_min_median_flux_norm)):
                 drop_reason_after_pre_knee[i] = "median_flux_norm_le_10"
                 continue
+            kept_after_flux_threshold_count += 1
             if max_inner_csv > 0 and rank_inner > max_inner_csv:
                 drop_reason_after_pre_knee[i] = "exceeds_top_k_nonref_inner_border_csv"
+                topk_truncated_count += 1
                 continue
+            kept_after_topk_count += 1
             kept_in_inner_border_csv[i] = True
             final_rank_by_idx[i] = rank_inner
             rank_inner += 1
+        selected_inner_border_count = int(np.count_nonzero(kept_in_inner_border_csv))
+    log_stage(
+        "write_nonref_select_inner_border_rows",
+        t_nonref_filter_stage,
+        meta={
+            "nonref_count": int(nonref_count),
+            "pre_knee_visible_count": int(pre_knee_visible_count),
+            "kept_after_flux_threshold_count": int(kept_after_flux_threshold_count),
+            "kept_after_topk_count": int(kept_after_topk_count),
+            "selected_inner_border_count": int(selected_inner_border_count),
+            "topk_truncated_count": int(topk_truncated_count),
+            "max_inner_csv": int(max_inner_csv) if nonref_count > 0 else int(args.top_k_nonref_inner_border_csv),
+        },
+    )
 
+    if nonref_count > 0:
         if csv_detail:
             with out_csv_nonref_inner_border_pre_knee.open("w", newline="", encoding="utf-8") as f_pre:
                 writer_pre = csv.writer(f_pre)
@@ -1716,6 +1785,16 @@ def main():
                         "drop_reason_after_pre_knee",
                     ]
                 )
+    log_stage(
+        "write_nonref_write_csvs_and_plot_payload",
+        t_nonref_csv_stage,
+        meta={
+            "nonref_count": int(nonref_count),
+            "csv_detail": int(csv_detail),
+            "selected_inner_border_count": int(selected_inner_border_count),
+            "plot_rank_count": int(len(nonref_plot_xy_rank)),
+        },
+    )
     log_stage(
         "write_nonref_outputs",
         t_nonref_outputs,
