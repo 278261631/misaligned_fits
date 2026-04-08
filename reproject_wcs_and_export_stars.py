@@ -1,5 +1,6 @@
 from pathlib import Path
 import argparse
+import json
 import time
 
 import matplotlib.pyplot as plt
@@ -244,6 +245,23 @@ def export_timing_timeline_png(stages, out_png: Path):
     print(f"WROTE {out_png}")
 
 
+def export_timing_jsonl(stages, out_jsonl: Path):
+    out_jsonl.parent.mkdir(parents=True, exist_ok=True)
+    with out_jsonl.open("w", encoding="utf-8") as f:
+        for i, s in enumerate(stages):
+            start_s = float(s.get("start_s", 0.0))
+            dur_s = max(float(s.get("dur_s", 0.0)), 0.0)
+            payload = {
+                "seq": int(i),
+                "step": str(s.get("name", "unknown")),
+                "start_s": start_s,
+                "duration_s": dur_s,
+                "end_s": start_s + dur_s,
+            }
+            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    print(f"WROTE {out_jsonl}")
+
+
 def main():
     args = parse_args()
     timing_png = (
@@ -251,6 +269,7 @@ def main():
         if args.out_timing_png is not None
         else args.out_fits.with_name(f"{args.out_fits.stem}.timing.png")
     )
+    timing_jsonl = timing_png.with_suffix(".jsonl")
     t_script0 = time.perf_counter()
     stages = []
 
@@ -270,6 +289,7 @@ def main():
     if args.out_stars_all_png is not None:
         expected_outputs.append(args.out_stars_all_png)
     expected_outputs.append(timing_png)
+    expected_outputs.append(timing_jsonl)
     if (not args.overwrite) and all(p.exists() for p in expected_outputs):
         print("SKIP reproject_wcs_and_export_stars.py: outputs already exist (use --overwrite to regenerate)")
         for p in expected_outputs:
@@ -438,6 +458,7 @@ def main():
         ),
     )
     _run_stage("write_timing_timeline_png", lambda: export_timing_timeline_png(stages, timing_png))
+    export_timing_jsonl(stages, timing_jsonl)
 
     if args.skip_median_filter:
         print("median_filter=skipped")
@@ -467,6 +488,7 @@ def main():
     print(f"WROTE {args.out_stars}")
     print(f"WROTE {out_stars_all}")
     print(f"WROTE {timing_png}")
+    print(f"WROTE {timing_jsonl}")
 
 
 if __name__ == "__main__":
