@@ -313,7 +313,35 @@ def main():
     _run_stage("write_projected_fits", lambda: fits.writeto(args.out_fits, out, out_header, overwrite=True))
 
     detect_img = _run_stage("prepare_detection_image", lambda: _safe_for_detection(out))
-    xy_all, flux_all = _run_stage("detect_stars", lambda: detect_stars(detect_img, max_stars=0))
+    t_detect0 = time.perf_counter()
+    xy_all, flux_all, detect_debug = detect_stars(detect_img, max_stars=0, return_debug=True)
+    t_detect1 = time.perf_counter()
+    detect_start = float(t_detect0 - t_script0)
+    stages.append({"name": "detect_prefilter", "start_s": detect_start, "dur_s": float(detect_debug.get("prefilter_duration_s", 0.0))})
+    cursor_s = detect_start + float(detect_debug.get("prefilter_duration_s", 0.0))
+    for p in detect_debug.get("passes", []):
+        d = float(p.get("duration_s", 0.0))
+        n = int(p.get("raw_count", 0))
+        stages.append({"name": f"{p.get('name', 'detect_pass')}[{n}]", "start_s": cursor_s, "dur_s": d})
+        cursor_s += d
+    merge_dur = float(detect_debug.get("merge_duration_s", 0.0))
+    stages.append({"name": "detect_merge_candidates", "start_s": cursor_s, "dur_s": merge_dur})
+    cursor_s += merge_dur
+    dedupe_dur = float(detect_debug.get("dedupe_duration_s", 0.0))
+    stages.append({"name": "detect_dedupe", "start_s": cursor_s, "dur_s": dedupe_dur})
+    cursor_s += dedupe_dur
+    sort_dur = float(detect_debug.get("sort_duration_s", 0.0))
+    stages.append({"name": "detect_sort_limit", "start_s": cursor_s, "dur_s": sort_dur})
+    accounted = (
+        float(detect_debug.get("prefilter_duration_s", 0.0))
+        + float(sum(float(p.get("duration_s", 0.0)) for p in detect_debug.get("passes", [])))
+        + merge_dur
+        + dedupe_dur
+        + sort_dur
+    )
+    remain = max(float(t_detect1 - t_detect0) - accounted, 0.0)
+    if remain > 1e-6:
+        stages.append({"name": "detect_overhead", "start_s": cursor_s + sort_dur, "dur_s": remain})
     stars_detected_raw = int(len(xy_all))
     if stars_detected_raw == 0:
         raise RuntimeError("No stars detected from reprojected image.")

@@ -1,4 +1,5 @@
 from pathlib import Path
+import time
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -70,42 +71,106 @@ def _dedupe_by_radius_keep_brightest(xy, flux, radius_px=2.5):
     return np.asarray(keep_xy, dtype=float), np.asarray(keep_flux, dtype=float)
 
 
-def detect_stars(image, max_stars=5000):
+def detect_stars(image, max_stars=5000, return_debug=False):
+    t0 = time.perf_counter()
     arr = np.asarray(image, dtype=float)
     finite = np.isfinite(arr)
     fill = float(np.nanmedian(arr[finite])) if np.any(finite) else 0.0
     base = np.where(finite, arr, fill)
     hp = base - gaussian_filter(base, sigma=6.0)
     smooth = gaussian_filter(base, sigma=1.2)
+    t1 = time.perf_counter()
 
     # Multi-scale detection: keep legacy high-pass pass and add bright-star-friendly passes.
     passes = [
-        (hp, 3.0, 4.0),
-        (smooth, 4.5, 3.8),
-        (base, 6.0, 3.5),
+        ("detect_pass_highpass", hp, 3.0, 4.0),
+        ("detect_pass_smooth", smooth, 4.5, 3.8),
+        ("detect_pass_base", base, 6.0, 3.5),
     ]
     xy_chunks = []
     flux_chunks = []
-    for detect_img, fwhm, thr_sigma in passes:
+    pass_debug = []
+    for pass_name, detect_img, fwhm, thr_sigma in passes:
+        tp0 = time.perf_counter()
         xy_i, flux_i = _dao_detect_single(detect_img, fwhm=fwhm, threshold_sigma=thr_sigma)
+        tp1 = time.perf_counter()
+        pass_debug.append(
+            {
+                "name": str(pass_name),
+                "duration_s": float(tp1 - tp0),
+                "raw_count": int(len(xy_i)),
+            }
+        )
         if len(xy_i) == 0:
             continue
         xy_chunks.append(xy_i)
         flux_chunks.append(flux_i)
 
     if len(xy_chunks) == 0:
-        return np.empty((0, 2), dtype=float), np.empty((0,), dtype=float)
+        xy_empty = np.empty((0, 2), dtype=float)
+        flux_empty = np.empty((0,), dtype=float)
+        if return_debug:
+            debug = {
+                "prefilter_duration_s": float(t1 - t0),
+                "passes": pass_debug,
+                "merge_duration_s": 0.0,
+                "dedupe_duration_s": 0.0,
+                "sort_duration_s": 0.0,
+                "total_duration_s": float(time.perf_counter() - t0),
+                "detected_before_dedupe": 0,
+                "detected_after_dedupe": 0,
+                "returned_count": 0,
+            }
+            return xy_empty, flux_empty, debug
+        return xy_empty, flux_empty
 
+    tm0 = time.perf_counter()
     xy = np.vstack(xy_chunks)
     flux = np.concatenate(flux_chunks)
-    xy, flux = _dedupe_by_radius_keep_brightest(xy, flux, radius_px=2.5)
-    if len(xy) == 0:
-        return np.empty((0, 2), dtype=float), np.empty((0,), dtype=float)
+    tm1 = time.perf_counter()
 
+    td0 = time.perf_counter()
+    xy, flux = _dedupe_by_radius_keep_brightest(xy, flux, radius_px=2.5)
+    td1 = time.perf_counter()
+    if len(xy) == 0:
+        xy_empty = np.empty((0, 2), dtype=float)
+        flux_empty = np.empty((0,), dtype=float)
+        if return_debug:
+            debug = {
+                "prefilter_duration_s": float(t1 - t0),
+                "passes": pass_debug,
+                "merge_duration_s": float(tm1 - tm0),
+                "dedupe_duration_s": float(td1 - td0),
+                "sort_duration_s": 0.0,
+                "total_duration_s": float(time.perf_counter() - t0),
+                "detected_before_dedupe": int(np.sum([p["raw_count"] for p in pass_debug])),
+                "detected_after_dedupe": 0,
+                "returned_count": 0,
+            }
+            return xy_empty, flux_empty, debug
+        return xy_empty, flux_empty
+
+    ts0 = time.perf_counter()
     order = np.argsort(flux)[::-1]
     if max_stars is not None and int(max_stars) > 0:
         order = order[: int(max_stars)]
-    return xy[order], flux[order]
+    xy_out = xy[order]
+    flux_out = flux[order]
+    ts1 = time.perf_counter()
+    if return_debug:
+        debug = {
+            "prefilter_duration_s": float(t1 - t0),
+            "passes": pass_debug,
+            "merge_duration_s": float(tm1 - tm0),
+            "dedupe_duration_s": float(td1 - td0),
+            "sort_duration_s": float(ts1 - ts0),
+            "total_duration_s": float(ts1 - t0),
+            "detected_before_dedupe": int(np.sum([p["raw_count"] for p in pass_debug])),
+            "detected_after_dedupe": int(len(xy)),
+            "returned_count": int(len(xy_out)),
+        }
+        return xy_out, flux_out, debug
+    return xy_out, flux_out
 
 
 def select_stars_uniform_grid(xy, flux, height, width, grid_x=7, grid_y=7, per_cell=80, max_total=5000):
