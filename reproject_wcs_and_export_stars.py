@@ -1,5 +1,6 @@
 from pathlib import Path
 import argparse
+import time
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -24,6 +25,12 @@ def parse_args():
         type=Path,
         default=None,
         help="Optional PNG path to visualize reprojected image with stars from .all.npz. Skip when not provided.",
+    )
+    parser.add_argument(
+        "--out-timing-png",
+        type=Path,
+        default=None,
+        help="Output timing timeline PNG path (default: next to --out-fits with .timing.png suffix).",
     )
     parser.add_argument(
         "--all-png-stretch",
@@ -203,8 +210,57 @@ def export_all_stars_png(
     print(f"WROTE {out_png}")
 
 
+def export_timing_timeline_png(stages, out_png: Path):
+    out_png.parent.mkdir(parents=True, exist_ok=True)
+    if len(stages) == 0:
+        stages = [{"name": "script_total", "start_s": 0.0, "dur_s": 0.0}]
+
+    labels = [str(s["name"]) for s in stages]
+    starts = np.asarray([float(s["start_s"]) for s in stages], dtype=np.float64)
+    durs = np.asarray([max(float(s["dur_s"]), 0.0) for s in stages], dtype=np.float64)
+    y = np.arange(len(stages), dtype=float)
+
+    total_s = float(np.max(starts + durs)) if len(stages) > 0 else 0.0
+    x_max = max(total_s * 1.05, 0.1)
+
+    fig_h = max(3.0, 0.5 * len(stages) + 1.5)
+    fig = plt.figure(figsize=(12, fig_h))
+    ax = fig.add_subplot(111)
+    ax.barh(y, durs, left=starts, height=0.65, color="#4C78A8", edgecolor="#2F4B7C", alpha=0.9)
+    ax.set_yticks(y)
+    ax.set_yticklabels(labels)
+    ax.invert_yaxis()
+    ax.set_xlim(0.0, x_max)
+    ax.set_xlabel("Elapsed time (s)")
+    ax.set_title(f"reproject_wcs_and_export_stars timing timeline (total={total_s:.3f}s)")
+    ax.grid(axis="x", linestyle="--", alpha=0.35)
+
+    for yi, st, du in zip(y, starts, durs):
+        ax.text(st + du + max(x_max * 0.005, 0.005), yi, f"{du:.3f}s", va="center", ha="left", fontsize=9)
+
+    fig.tight_layout()
+    fig.savefig(out_png, dpi=180)
+    plt.close(fig)
+    print(f"WROTE {out_png}")
+
+
 def main():
     args = parse_args()
+    timing_png = (
+        args.out_timing_png
+        if args.out_timing_png is not None
+        else args.out_fits.with_name(f"{args.out_fits.stem}.timing.png")
+    )
+    t_script0 = time.perf_counter()
+    stages = []
+
+    def _run_stage(name, fn):
+        t0 = time.perf_counter()
+        ret = fn()
+        t1 = time.perf_counter()
+        stages.append({"name": str(name), "start_s": float(t0 - t_script0), "dur_s": float(t1 - t0)})
+        return ret
+
     out_stars_all = (
         args.out_stars_all
         if args.out_stars_all is not None
@@ -213,29 +269,38 @@ def main():
     expected_outputs = [args.out_fits, args.out_stars, out_stars_all]
     if args.out_stars_all_png is not None:
         expected_outputs.append(args.out_stars_all_png)
+    expected_outputs.append(timing_png)
     if (not args.overwrite) and all(p.exists() for p in expected_outputs):
         print("SKIP reproject_wcs_and_export_stars.py: outputs already exist (use --overwrite to regenerate)")
         for p in expected_outputs:
             print(f"EXISTS {p}")
         return
 
-    a_data = fits.getdata(args.a).astype(np.float32)
-    b_data = fits.getdata(args.b).astype(np.float32)
-    a_header = fits.getheader(args.a)
-    b_header = fits.getheader(args.b)
+    def _load_inputs():
+        a_data_local = fits.getdata(args.a).astype(np.float32)
+        b_data_local = fits.getdata(args.b).astype(np.float32)
+        a_header_local = fits.getheader(args.a)
+        b_header_local = fits.getheader(args.b)
+        return a_data_local, b_data_local, a_header_local, b_header_local
+
+    a_data, b_data, a_header, b_header = _run_stage("load_fits_and_headers", _load_inputs)
     h, w = a_data.shape
 
-    wcs_a = WCS(a_header).celestial
-    wcs_b = WCS(b_header).celestial
+    def _build_wcs():
+        return WCS(a_header).celestial, WCS(b_header).celestial
+
+    wcs_a, wcs_b = _run_stage("build_wcs", _build_wcs)
 
     if args.skip_median_filter:
         b_input = b_data
+        stages.append({"name": "median_filter(skipped)", "start_s": float(time.perf_counter() - t_script0), "dur_s": 0.0})
     else:
-        b_input = median_filter(b_data, size=int(args.median_size))
-    out = reproject_b_to_a_wcs(a_data, b_input, wcs_a, wcs_b, chunk_rows=args.chunk_rows)
-    args.out_fits.parent.mkdir(parents=True, exist_ok=True)
-    args.out_stars.parent.mkdir(parents=True, exist_ok=True)
-    out_stars_all.parent.mkdir(parents=True, exist_ok=True)
+        b_input = _run_stage("median_filter", lambda: median_filter(b_data, size=int(args.median_size)))
+    out = _run_stage(
+        "reproject_to_a_wcs",
+        lambda: reproject_b_to_a_wcs(a_data, b_input, wcs_a, wcs_b, chunk_rows=args.chunk_rows),
+    )
+    _run_stage("prepare_output_dirs", lambda: (args.out_fits.parent.mkdir(parents=True, exist_ok=True), args.out_stars.parent.mkdir(parents=True, exist_ok=True), out_stars_all.parent.mkdir(parents=True, exist_ok=True), timing_png.parent.mkdir(parents=True, exist_ok=True)))
 
     out_header = a_header.copy()
     mjd_from_b, jd_key = _resolve_mjd_from_b_header(b_header)
@@ -245,10 +310,10 @@ def main():
         out_header["HIERARCH SRC_B_JD_KEY"] = str(jd_key)
     else:
         print("WARNING: No JD key found in --b header; output MJD keeps reference header value.")
-    fits.writeto(args.out_fits, out, out_header, overwrite=True)
+    _run_stage("write_projected_fits", lambda: fits.writeto(args.out_fits, out, out_header, overwrite=True))
 
-    detect_img = _safe_for_detection(out)
-    xy_all, flux_all = detect_stars(detect_img, max_stars=0)
+    detect_img = _run_stage("prepare_detection_image", lambda: _safe_for_detection(out))
+    xy_all, flux_all = _run_stage("detect_stars", lambda: detect_stars(detect_img, max_stars=0))
     stars_detected_raw = int(len(xy_all))
     if stars_detected_raw == 0:
         raise RuntimeError("No stars detected from reprojected image.")
@@ -268,9 +333,11 @@ def main():
         thr_candidates.append(float(flux_thr_pct_value))
     if len(thr_candidates) > 0:
         flux_filter_threshold = max(thr_candidates)
-        keep = np.asarray(flux_all, dtype=np.float64) >= float(flux_filter_threshold)
-        xy_all = xy_all[keep]
-        flux_all = flux_all[keep]
+        def _apply_flux_filter():
+            keep_local = np.asarray(flux_all, dtype=np.float64) >= float(flux_filter_threshold)
+            return xy_all[keep_local], flux_all[keep_local]
+
+        xy_all, flux_all = _run_stage("flux_filter", _apply_flux_filter)
         if len(xy_all) == 0:
             raise RuntimeError(
                 "No stars remain after flux filtering. "
@@ -279,55 +346,70 @@ def main():
             )
 
     if args.no_uniform_selection:
-        order = np.argsort(flux_all)[::-1]
-        if int(args.max_stars) > 0:
-            order = order[: int(args.max_stars)]
-        xy_align = xy_all[order]
-        flux_align = flux_all[order]
+        def _select_global_brightest():
+            order_local = np.argsort(flux_all)[::-1]
+            if int(args.max_stars) > 0:
+                order_local = order_local[: int(args.max_stars)]
+            return xy_all[order_local], flux_all[order_local]
+
+        xy_align, flux_align = _run_stage("select_stars_global_brightness", _select_global_brightest)
     else:
-        xy_align, flux_align = select_stars_uniform_grid(
-            xy_all,
-            flux_all,
-            height=int(h),
-            width=int(w),
-            grid_x=int(args.uniform_grid_x),
-            grid_y=int(args.uniform_grid_y),
-            per_cell=int(args.uniform_per_cell),
-            max_total=int(args.max_stars),
+        xy_align, flux_align = _run_stage(
+            "select_stars_uniform_grid",
+            lambda: select_stars_uniform_grid(
+                xy_all,
+                flux_all,
+                height=int(h),
+                width=int(w),
+                grid_x=int(args.uniform_grid_x),
+                grid_y=int(args.uniform_grid_y),
+                per_cell=int(args.uniform_per_cell),
+                max_total=int(args.max_stars),
+            ),
         )
     if len(xy_align) == 0:
         raise RuntimeError("No stars selected for alignment from reprojected image.")
 
-    np.savez_compressed(
-        args.out_stars,
-        xy=xy_align.astype(np.float32),
-        flux=flux_align.astype(np.float32),
-        max_stars=int(args.max_stars),
-        source_fits=str(args.b),
-        reference_fits=str(args.a),
-        projected_fits=str(args.out_fits),
-        height=int(h),
-        width=int(w),
+    _run_stage(
+        "write_alignment_stars_npz",
+        lambda: np.savez_compressed(
+            args.out_stars,
+            xy=xy_align.astype(np.float32),
+            flux=flux_align.astype(np.float32),
+            max_stars=int(args.max_stars),
+            source_fits=str(args.b),
+            reference_fits=str(args.a),
+            projected_fits=str(args.out_fits),
+            height=int(h),
+            width=int(w),
+        ),
     )
-    np.savez_compressed(
-        out_stars_all,
-        xy=xy_all.astype(np.float32),
-        flux=flux_all.astype(np.float32),
-        source_fits=str(args.b),
-        reference_fits=str(args.a),
-        projected_fits=str(args.out_fits),
-        height=int(h),
-        width=int(w),
+    _run_stage(
+        "write_all_stars_npz",
+        lambda: np.savez_compressed(
+            out_stars_all,
+            xy=xy_all.astype(np.float32),
+            flux=flux_all.astype(np.float32),
+            source_fits=str(args.b),
+            reference_fits=str(args.a),
+            projected_fits=str(args.out_fits),
+            height=int(h),
+            width=int(w),
+        ),
     )
-    export_all_stars_png(
-        out,
-        xy_all,
-        flux_all,
-        args.out_stars_all_png,
-        args.all_png_stretch,
-        args.all_png_gamma,
-        args.all_png_min_flux_percentile,
+    _run_stage(
+        "export_all_stars_png",
+        lambda: export_all_stars_png(
+            out,
+            xy_all,
+            flux_all,
+            args.out_stars_all_png,
+            args.all_png_stretch,
+            args.all_png_gamma,
+            args.all_png_min_flux_percentile,
+        ),
     )
+    _run_stage("write_timing_timeline_png", lambda: export_timing_timeline_png(stages, timing_png))
 
     if args.skip_median_filter:
         print("median_filter=skipped")
@@ -356,6 +438,7 @@ def main():
     print(f"WROTE {args.out_fits}")
     print(f"WROTE {args.out_stars}")
     print(f"WROTE {out_stars_all}")
+    print(f"WROTE {timing_png}")
 
 
 if __name__ == "__main__":
